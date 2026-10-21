@@ -1,0 +1,16 @@
+# secrets and operator notes
+.env
+.env.*
+!.env.example
+*.local.md
+
+# runtime state: journal, agent wallets (their saved state is key material), master seed, decision log, keys
+data/
+*.log
+
+node_modules/
+
+# private context: infra, accounts, notes
+local_docs/
+
+CLAUDE.md

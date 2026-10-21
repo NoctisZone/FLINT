@@ -1,0 +1,63 @@
+# Three more proof servers for the traders, next to the one on 6300: the
+# halves of a batch are proved side by side, and one server with four cores
+# proves two at a time. Loopback only: a proof request carries the coins it
+# spends. Start: docker compose -f docker/proof-servers.yml up -d
+# Then in .env: PROOF_SERVER_URL=http://localhost:6300,http://localhost:6311,http://localhost:6312,http://localhost:6313
+services:
+  proof-server-1:
+    image: midnightntwrk/proof-server:8.1.0
+    container_name: otc-market-proof-server-1
+    command: ["midnight-proof-server", "--network", "preprod"]
+    environment:
+      MIDNIGHT_PROOF_SERVER_NUM_WORKERS: "2"
+      MIDNIGHT_PROOF_SERVER_JOB_TIMEOUT: "600"
+    ports:
+      - "127.0.0.1:6311:6300"
+    volumes:
+      - proof-params:/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 12G
+
+  proof-server-2:
+    image: midnightntwrk/proof-server:8.1.0
+    container_name: otc-market-proof-server-2
+    command: ["midnight-proof-server", "--network", "preprod"]
+    environment:
+      MIDNIGHT_PROOF_SERVER_NUM_WORKERS: "2"
+      MIDNIGHT_PROOF_SERVER_JOB_TIMEOUT: "600"
+    ports:
+      - "127.0.0.1:6312:6300"
+    volumes:
+      - proof-params:/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 12G
+
+  proof-server-3:
+    image: midnightntwrk/proof-server:8.1.0
+    container_name: otc-market-proof-server-3
+    command: ["midnight-proof-server", "--network", "preprod"]
+    environment:
+      MIDNIGHT_PROOF_SERVER_NUM_WORKERS: "2"
+      MIDNIGHT_PROOF_SERVER_JOB_TIMEOUT: "600"
+    ports:
+      - "127.0.0.1:6313:6300"
+    volumes:
+      - proof-params:/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 12G
+
+volumes:
+  # the proving parameters, fetched once and shared
+  proof-params:

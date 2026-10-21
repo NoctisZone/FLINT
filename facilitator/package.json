@@ -1,0 +1,28 @@
+{
+  "name": "flint-facilitator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "x402 facilitator for Flint: verify and settle Cardano x402 payments over @odatano/core, backed by the ODATANO API",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "cds": {
+    "requires": {
+      "odatano-core": {
+        "network": "preprod",
+        "backends": [
+          "odatano"
+        ]
+      }
+    }
+  },
+  "dependencies": {
+    "@cap-js/sqlite": "^3.1.1",
+    "@odatano/core": "^2.0.0-rc.35",
+    "@odatano/x402": "^0.7.1",
+    "@sap/cds": "^10.1.1",
+    "express": "^4.22.3"
+  }
+}

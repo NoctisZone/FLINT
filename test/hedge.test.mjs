@@ -1,0 +1,213 @@
+/** Hedge on fill against a stand-in Strike: the order, the match, netting, the books, resting limits, the watchdog. */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { hedger } from "../gateway/hedge.mjs";
+import { check } from "../gateway/checks.mjs";
+import { profiles } from "../agents/profiles.mjs";
+
+const MARK = 80_000;
+const M = profiles({ owner: "o", expiry: "2026-10-23T15:00:00Z" })["mm-rule"];
+const T0 = Date.parse("2026-10-22T12:00:00Z");
+
+function setup({ placeOrder, state, minNotionalUsd = 0 } = {}) {
+  const orders = [];
+  const cancels = [];
+  const log = [];
+  let t = T0;
+  const h = hedger({
+    mandate: M, symbol: "BTC-USD", minNotionalUsd,
+    strike: { mark: () => MARK, placeOrder: placeOrder ?? (async (o) => { orders.push(o); return { status: "pending" }; }), cancel: async (o) => { cancels.push(o); return {}; } },
+    log: (e) => log.push(e), now: () => t,
+    state: { equityStartUsd: 1000, equityNowUsd: 1000, ...state },
+  });
+  return { h, orders, cancels, log, clock: (ms) => { t = ms; } };
+}
+const fill = (o = {}) => ({ id: "q-1", pair: "tBTC/tUSD", side: "sell", sizeBtc: 0.001, price: 80_400, txHash: "ab".repeat(32), at: T0, ...o });
+const kinds = (log) => log.map((e) => e.kind);
+
+test("a Midnight sell fill places a Strike market buy of the same size; the Strike fill closes the loop with its latency", async () => {
+  const { h, orders, log, clock } = setup();
+  const r = await h.onFill(fill());
+  assert.ok(r.placed);
+  assert.deepEqual([orders[0].symbol, orders[0].side, orders[0].type, orders[0].size, orders[0].clientOrderId], ["BTC-USD", "buy", "market", 0.001, r.clientOrderId]);
+  assert.equal(h.state.midnightInventoryBtc, -0.001);
+  assert.equal(h.state.unhedgedBtc, -0.001);
+  assert.equal(h.pending.length, 1);
+  clock(T0 + 6_200);
+  await h.onStrikeEvent({ kind: "fill", symbol: "BTC-USD", clientOrderId: r.clientOrderId, side: "BUY", size: "0.001", price: "80010", at: T0 + 6_200 });
+  assert.equal(h.pending.length, 0);
+  assert.equal(h.hedges.length, 1);
+  assert.equal(h.hedges[0].latencyMs, 6_200);
+  assert.equal(h.maxLatencyMs, 6_200);
+  assert.equal(h.state.unhedgedBtc, 0);
+  assert.equal(h.state.strikePositionBtc, 0.001);
+  assert.equal(h.state.midnightInventoryBtc + h.state.strikePositionBtc, 0, "net delta flat");
+  assert.deepEqual(kinds(log), ["fill", "hedge.placed", "hedge.filled"]);
+  assert.equal(h.state.frozen, false);
+});
+
+test("a buy fill hedges with a sell; two partial Strike fills complete one hedge", async () => {
+  const { h, orders } = setup();
+  const r = await h.onFill(fill({ id: "q-2", side: "buy", sizeBtc: 0.002 }));
+  assert.equal(orders[0].side, "sell");
+  await h.onStrikeEvent({ kind: "fill", clientOrderId: r.clientOrderId, side: "SELL", size: "0.0012", price: "80000", at: T0 + 1000 });
+  assert.equal(h.pending.length, 1);
+  assert.equal(h.state.unhedgedBtc, 0.0008);
+  await h.onStrikeEvent({ kind: "fill", clientOrderId: r.clientOrderId, side: "SELL", size: "0.0008", price: "80000", at: T0 + 1500 });
+  assert.equal(h.pending.length, 0);
+  assert.equal(h.state.unhedgedBtc, 0);
+  assert.equal(h.hedges[0].latencyMs, 1500);
+});
+
+test("a fill on the other side nets the older exposure first; the resting limit is pulled and only the remainder goes to Strike", async () => {
+  const { h, orders, cancels, log, clock } = setup();
+  await h.onFill(fill({ id: "a", side: "buy", sizeBtc: 0.002, at: T0 }));
+  await h.onStrikeEvent({ kind: "order", clientOrderId: orders[0].clientOrderId, status: "CANCELED", terminal: true, closeReason: "market_order_exceeded_slippage", at: T0 + 100 });
+  assert.equal(h.pending[0].resting, true);
+  clock(T0 + 4_000);
+  await h.onFill(fill({ id: "b", side: "sell", sizeBtc: 0.0015, at: T0 + 4_000 }));
+  assert.equal(h.hedges.length, 0, "a is only partly netted");
+  assert.equal(h.state.unhedgedBtc, 0.0005);
+  assert.deepEqual(h.exposures.map((e) => [e.fillId, e.remaining]), [["a", 0.0005]]);
+  assert.equal(cancels.length, 1, "the resting limit was pulled");
+  assert.ok(kinds(log).includes("hedge.pulled"));
+  const placed = log.filter((e) => e.kind === "hedge.placed");
+  assert.equal(placed.at(-1).sizeBtc, 0.0005, "the net 0.0005 is hedged");
+  await h.onStrikeEvent({ kind: "fill", clientOrderId: placed.at(-1).clientOrderId, side: "SELL", size: "0.0005", price: "80000", at: T0 + 5_000 });
+  assert.equal(h.hedges.length, 1);
+  assert.equal(h.hedges[0].fill.id, "a");
+  assert.equal(h.hedges[0].latencyMs, 5_000);
+  assert.equal(h.state.unhedgedBtc, 0);
+});
+
+test("a fill that fully nets an older one is a hedge by netting, with the netting fill's time as latency", async () => {
+  const { h, orders, log } = setup();
+  await h.onFill(fill({ id: "a", side: "buy", sizeBtc: 0.001, at: T0 }));
+  await h.onStrikeEvent({ kind: "order", clientOrderId: orders[0].clientOrderId, status: "CANCELED", terminal: true, closeReason: "market_order_exceeded_slippage", at: T0 + 100 });
+  await h.onFill(fill({ id: "b", side: "sell", sizeBtc: 0.001, at: T0 + 3_000 }));
+  assert.equal(h.hedges.length, 1);
+  assert.deepEqual([h.hedges[0].fill.id, h.hedges[0].hedge.how, h.hedges[0].latencyMs], ["a", "netted", 3_000]);
+  assert.equal(h.state.unhedgedBtc, 0);
+  assert.equal(h.pending.length, 0);
+  assert.equal(orders.length, 2, "no third order: nothing left to hedge");
+  assert.ok(kinds(log).includes("hedge.netted"));
+});
+
+test("the watchdog freezes once when a hedge misses its deadline; only the reducing side may act; the freeze lifts when nothing is left", async () => {
+  const { h, log, clock } = setup();
+  const r = await h.onFill(fill());
+  clock(T0 + M.risk.hedgeWithinSec * 1000);
+  assert.deepEqual(h.tick(), [], "on the deadline is not late");
+  clock(T0 + M.risk.hedgeWithinSec * 1000 + 1);
+  assert.deepEqual(h.tick(), [r.clientOrderId]);
+  assert.equal(h.state.frozen, true);
+  assert.match(h.state.frozenReason, /not filled within 30s/);
+  h.tick();
+  assert.equal(log.filter((e) => e.kind === "hedge.late").length, 1, "logged once");
+  assert.equal(check({ venue: "midnight", kind: "quote", pair: "tBTC/tUSD", side: "ask", sizeBtc: 0.001, price: MARK * 1.005, ttlSec: 60 }, h.state).rule, "frozen", "an ask would add to the short");
+  assert.equal(check({ venue: "midnight", kind: "quote", pair: "tBTC/tUSD", side: "bid", sizeBtc: 0.0005, price: MARK * 0.995, ttlSec: 60 }, h.state), null, "a bid reduces the short: allowed while frozen");
+  assert.equal(check({ venue: "strike", kind: "order", symbol: "BTC-USD", side: "buy", sizeBtc: 0.001 }, h.state), null, "the late hedge itself is still allowed");
+  await h.onStrikeEvent({ kind: "fill", clientOrderId: r.clientOrderId, side: "BUY", size: "0.001", price: "80000", at: T0 + 40_000 });
+  assert.equal(h.state.frozen, false, "hedged late, but hedged");
+  assert.equal(log.at(-1).kind, "resumed");
+});
+
+test("a rejected hedge order, or one Strike does not accept, freezes the agent; the exposure stays on the books", async () => {
+  const a = setup();
+  const r = await a.h.onFill(fill());
+  await a.h.onStrikeEvent({ kind: "order", clientOrderId: r.clientOrderId, status: "REJECTED", terminal: true, closeReason: "insufficient_balance", at: T0 + 100 });
+  assert.equal(a.h.state.frozen, true);
+  assert.match(a.h.state.frozenReason, /rejected: insufficient_balance/);
+  const b = setup({ placeOrder: async () => { throw new Error("Strike 503 on /v2/order: service unavailable"); } });
+  const r2 = await b.h.onFill(fill());
+  assert.equal(r2.placed, false);
+  assert.equal(b.h.pending.length, 0);
+  assert.equal(b.h.state.frozen, true);
+  assert.equal(b.h.state.unhedgedBtc, -0.001);
+});
+
+test("a hedge the mandate refuses (market not allowed) is not placed and freezes the agent", async () => {
+  const orders = [];
+  const h = hedger({ mandate: { ...M, strike: { ...M.strike, markets: ["ETH-USD"] } }, symbol: "BTC-USD", strike: { mark: () => MARK, placeOrder: async (o) => { orders.push(o); return {}; } }, now: () => T0 });
+  const r = await h.onFill(fill());
+  assert.equal(r.placed, false);
+  assert.equal(r.refused.rule, "strike.markets");
+  assert.equal(orders.length, 0);
+  assert.equal(h.state.frozen, true);
+});
+
+test("the books come back from a snapshot as one carried exposure; rehedge places its order and the fill lifts the freeze", async () => {
+  const { h, orders, log } = setup({ state: { midnightInventoryBtc: 0.0018, unhedgedBtc: 0.0018, frozen: true, frozenReason: "last run" } });
+  assert.equal(h.state.frozen, true);
+  assert.equal(h.exposures.length, 1);
+  const r = await h.rehedge();
+  assert.ok(r.placed);
+  assert.deepEqual([orders[0].side, orders[0].size], ["sell", 0.0018]);
+  assert.equal(kinds(log)[0], "carry");
+  await h.onStrikeEvent({ kind: "fill", clientOrderId: r.clientOrderId, side: "SELL", size: "0.0018", price: "80000", at: T0 + 500 });
+  assert.equal(h.state.frozen, false);
+  assert.equal(h.state.unhedgedBtc, 0);
+  assert.deepEqual(await setup().h.rehedge(), { placed: false });
+});
+
+test("carried exposure below Strike's minimum order stays on the books: no order, still frozen, only the reducing side quotes", async () => {
+  const { h, orders, log } = setup({ minNotionalUsd: 100, state: { midnightInventoryBtc: 0.0003, unhedgedBtc: 0.0003, frozen: true, frozenReason: "min notional" } });
+  assert.deepEqual(await h.rehedge(), { placed: false, small: true });
+  assert.equal(orders.length, 0);
+  assert.equal(h.state.frozen, true);
+  assert.equal(h.state.unhedgedBtc, 0.0003);
+  assert.ok(kinds(log).includes("carry.small"));
+  assert.equal(check({ venue: "midnight", kind: "quote", pair: "tBTC/tUSD", side: "ask", sizeBtc: 0.0002, price: MARK * 1.005, ttlSec: 60 }, h.state), null);
+});
+
+test("a market hedge canceled for slippage becomes a resting limit at the edge of the band; its fill closes the loop", async () => {
+  const { h, orders, log } = setup();
+  const r = await h.onFill(fill({ side: "buy", sizeBtc: 0.002 }));
+  await h.onStrikeEvent({ kind: "order", clientOrderId: r.clientOrderId, status: "CANCELED", terminal: true, closeReason: "market_order_exceeded_slippage", at: T0 + 200 });
+  assert.equal(h.state.frozen, false, "a resting hedge is not a lost hedge");
+  assert.equal(orders.length, 2);
+  assert.deepEqual([orders[1].type, orders[1].side, orders[1].size, orders[1].price, orders[1].timeInForce, orders[1].clientOrderId], ["limit", "sell", 0.002, 78_400, "GTC", `${r.clientOrderId}-L`]);
+  assert.equal(h.pending.length, 1);
+  assert.equal(log.at(-1).kind, "hedge.resting");
+  await h.onStrikeEvent({ kind: "fill", clientOrderId: `${r.clientOrderId}-L`, side: "SELL", size: "0.002", price: "78400", at: T0 + 9_000 });
+  assert.equal(h.pending.length, 0);
+  assert.equal(h.state.unhedgedBtc, 0);
+  assert.equal(h.hedges[0].latencyMs, 9_000);
+  assert.equal(h.hedges[0].hedge.how, "limit");
+  await h.onStrikeEvent({ kind: "order", clientOrderId: "nope", status: "CANCELED", terminal: true, closeReason: "market_order_exceeded_slippage", at: T0 });
+  assert.equal(orders.length, 2, "an unknown order changes nothing");
+});
+
+test("a resting limit hedge that is canceled freezes", async () => {
+  const { h } = setup();
+  const r = await h.onFill(fill({ side: "buy", sizeBtc: 0.002 }));
+  await h.onStrikeEvent({ kind: "order", clientOrderId: r.clientOrderId, status: "CANCELED", terminal: true, closeReason: "market_order_exceeded_slippage", at: T0 + 200 });
+  await h.onStrikeEvent({ kind: "order", clientOrderId: `${r.clientOrderId}-L`, status: "CANCELED", terminal: true, closeReason: "", at: T0 + 300 });
+  assert.equal(h.state.frozen, true);
+});
+
+test("a netting fill that leaves less than one step closes the exposure; the dust stays in the inventory", async () => {
+  const { h, orders } = setup();
+  await h.onFill(fill({ id: "a", side: "buy", sizeBtc: 0.00176749, at: T0 }));
+  await h.onStrikeEvent({ kind: "order", clientOrderId: orders[0].clientOrderId, status: "CANCELED", terminal: true, closeReason: "market_order_exceeded_slippage", at: T0 + 100 });
+  await h.onFill(fill({ id: "b", side: "sell", sizeBtc: 0.00176, at: T0 + 2_000 }));
+  assert.equal(h.exposures.length, 0);
+  assert.equal(h.state.unhedgedBtc, 0);
+  assert.equal(h.hedges[0].hedge.how, "netted");
+  assert.equal(h.state.midnightInventoryBtc, 0.00000749);
+  assert.equal(h.state.frozen, false);
+});
+
+test("a carried hedge never crosses zero when the inventory holds dust; a few dollars of exposure close as dust", async () => {
+  const { h, orders, log } = setup({ minNotionalUsd: 100, state: { midnightInventoryBtc: 0.00178749, strikePositionBtc: -0.00319, unhedgedBtc: -0.00141, frozen: true, frozenReason: "late" } });
+  const r = await h.rehedge();
+  assert.ok(r.placed);
+  assert.deepEqual([orders[0].side, orders[0].size], ["buy", 0.0014], "0.00141 would cross zero by the inventory's dust");
+  await h.onStrikeEvent({ kind: "fill", clientOrderId: r.clientOrderId, side: "BUY", size: "0.0014", price: "84000", at: T0 + 300 });
+  assert.equal(h.state.unhedgedBtc, -0.00001, "one step left");
+  const r2 = await h.rehedge();
+  assert.deepEqual(r2, { placed: false, dust: true });
+  assert.equal(h.state.unhedgedBtc, 0);
+  assert.equal(h.state.frozen, false);
+  assert.ok(log.some((e) => e.kind === "dust"));
+});
