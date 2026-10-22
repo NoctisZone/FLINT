@@ -14,6 +14,7 @@
  * @param {boolean} v.frozen
  * @param {number} [v.netDeltaBtc]  inventory plus Strike position, signed; the side that would grow it is sized to the limit
  * @param {number} [v.strikePositionBtc]  signed; a fill's hedge must keep the Strike position under its cap
+ * @param {number} [v.inventoryBtc]  tBTC held, signed; what an unwind sells down
  * @param {number} v.now   ms
  * @param {object} [o]
  * @param {number} [o.spreadBps]       each side's distance from the mark, clamped into the mandate's band
@@ -21,20 +22,26 @@
  * @param {number} [o.ttlSec]
  * @param {number} [o.sizeUsd]         each quote's size in USD, capped by the mandate
  * @param {boolean} [o.pause]          pull every quote, post none
+ * @param {boolean} [o.unwind]         only the side that sells the inventory down, never more than there is
  * @param {number} [o.minQuoteUsd]      no quote smaller than this: Strike's minimum hedge notional
  * @returns {{ retire: string[], quotes: Array<{side, sizeBtc, price, ttlSec}>, reason: string }}
  */
-export function makerDecision(v, { spreadBps = 25, requoteBps, ttlSec, sizeUsd, pause = false, minQuoteUsd = 5 } = {}) {
+export function makerDecision(v, { spreadBps = 25, requoteBps, ttlSec, sizeUsd, pause = false, unwind = false, minQuoteUsd = 5, step = STEP_BTC, tick = 0.1 } = {}) {
+  // sizes on the market's step, prices on its tick (BTC-USD's by default)
+  const floorStep = (x) => roundTo(Math.floor(x / step + 1e-9) * step, step);
+  const ceilTick = (x) => roundTo(Math.ceil(x / tick - 1e-6) * tick, tick);
+  const floorTick = (x) => roundTo(Math.floor(x / tick + 1e-6) * tick, tick);
   const m = v.mandate.midnight;
   const spread = Math.min(Math.max(spreadBps, m.minSpreadBps), m.maxSpreadBps);
   const half = spread / 10_000;
   const requote = (requoteBps ?? spread) / 10_000;
   const ttl = Math.min(ttlSec ?? m.quoteTtlSec, m.quoteTtlSec);
   if (pause) return { retire: v.openQuotes.map((q) => q.quoteId), quotes: [], reason: "paused: pulling every quote" };
-  // frozen: only the side that brings net delta back toward zero may stand
+  // frozen: only the side that brings net delta back toward zero may stand; unwinding: only the side that sells the inventory down
   const delta = v.netDeltaBtc ?? 0;
-  const onlySide = v.frozen ? (delta > 0 ? "ask" : delta < 0 ? "bid" : null) : null;
-  if (v.frozen && !onlySide) return { retire: v.openQuotes.map((q) => q.quoteId), quotes: [], reason: "frozen: pulling every quote" };
+  const inv = v.inventoryBtc ?? 0;
+  const onlySide = unwind ? (inv > 0 ? "ask" : inv < 0 ? "bid" : null) : v.frozen ? (delta > 0 ? "ask" : delta < 0 ? "bid" : null) : null;
+  if ((v.frozen || unwind) && !onlySide) return { retire: v.openQuotes.map((q) => q.quoteId), quotes: [], reason: unwind ? "unwinding: no inventory left to sell" : "frozen: pulling every quote" };
 
   const retire = [];
   const keep = { bid: null, ask: null };
@@ -48,33 +55,33 @@ export function makerDecision(v, { spreadBps = 25, requoteBps, ttlSec, sizeUsd, 
   const cap = Math.min(m.maxQuoteUsd, v.mandate.risk.maxNetDeltaUsd);
   const size = Math.min(sizeUsd ?? cap, cap);
   // a size at the hedge minimum rounds up to the step: rounded down it would fall under the minimum
-  const wantBtc = size >= minQuoteUsd && floor8(size / v.mark) * v.mark < minQuoteUsd ? round8(floor8(size / v.mark) + STEP_BTC) : size / v.mark;
+  const wantBtc = size >= minQuoteUsd && floorStep(size / v.mark) * v.mark < minQuoteUsd ? roundTo(floorStep(size / v.mark) + step, step) : size / v.mark;
   // a fill moves net delta by the quote's size: an ask lowers it, a bid raises it; neither may leave the limit
   const roomBtc = v.mandate.risk.maxNetDeltaUsd / v.mark;
-  // frozen: a quote may bring net delta toward zero but never across it
-  const roomAsk = onlySide ? Math.max(0, delta) : Math.max(0, roomBtc + delta);
-  const roomBid = onlySide ? Math.max(0, -delta) : Math.max(0, roomBtc - delta);
+  // frozen: a quote may bring net delta toward zero but never across it; unwinding: never more than the inventory, inside the delta limit
+  const roomAsk = unwind ? Math.min(Math.max(0, inv), Math.max(0, roomBtc + delta)) : onlySide ? Math.max(0, delta) : Math.max(0, roomBtc + delta);
+  const roomBid = unwind ? Math.min(Math.max(0, -inv), Math.max(0, roomBtc - delta)) : onlySide ? Math.max(0, -delta) : Math.max(0, roomBtc - delta);
   // a bid's hedge sells on Strike, an ask's hedge buys: neither may push the position past its cap;
   // the part of a fill that nets open exposure of the other side needs no hedge at all
   const pos = v.strikePositionBtc ?? 0;
   const posCapBtc = v.mandate.strike.maxPositionUsd / v.mark;
   const hedgeRoomBid = Math.max(0, posCapBtc + pos) + Math.max(0, -delta);
   const hedgeRoomAsk = Math.max(0, posCapBtc - pos) + Math.max(0, delta);
-  const fits = (x) => x >= STEP_BTC && x * v.mark >= minQuoteUsd;
+  const fits = (x) => x >= step - 1e-12 && x * v.mark >= minQuoteUsd;
   const quotes = [];
   const reasons = [];
   if (!keep.ask && (!onlySide || onlySide === "ask")) {
     const sizeBtc = Math.min(wantBtc, v.holdings.spendable.btc, roomAsk, hedgeRoomAsk);
-    if (fits(floor8(sizeBtc))) quotes.push({ side: "ask", sizeBtc: round8(floor8(sizeBtc)), price: ceil1(v.mark * (1 + half)), ttlSec: ttl });
+    if (fits(floorStep(sizeBtc))) quotes.push({ side: "ask", sizeBtc: floorStep(sizeBtc), price: ceilTick(v.mark * (1 + half)), ttlSec: ttl });
     else reasons.push(size < minQuoteUsd ? `quote size ${size} USD is under the hedge minimum of ${minQuoteUsd} USD` : roomAsk * v.mark < minQuoteUsd ? "net delta leaves no room for an ask" : hedgeRoomAsk * v.mark < minQuoteUsd ? "the Strike position cap leaves no room to hedge an ask" : `not enough tBTC for an ask of at least ${minQuoteUsd} USD`);
   }
   if (!keep.bid && (!onlySide || onlySide === "bid")) {
     const sizeBtc = Math.min(wantBtc, v.holdings.spendable.usd / (v.mark * (1 - half)), roomBid, hedgeRoomBid);
-    if (fits(floor8(sizeBtc))) quotes.push({ side: "bid", sizeBtc: round8(floor8(sizeBtc)), price: floor1(v.mark * (1 - half)), ttlSec: ttl });
+    if (fits(floorStep(sizeBtc))) quotes.push({ side: "bid", sizeBtc: floorStep(sizeBtc), price: floorTick(v.mark * (1 - half)), ttlSec: ttl });
     else reasons.push(size < minQuoteUsd ? `quote size ${size} USD is under the hedge minimum of ${minQuoteUsd} USD` : roomBid * v.mark < minQuoteUsd ? "net delta leaves no room for a bid" : hedgeRoomBid * v.mark < minQuoteUsd ? "the Strike position cap leaves no room to hedge a bid" : `not enough tUSD for a bid of at least ${minQuoteUsd} USD`);
   }
   const reason = [
-    onlySide ? `frozen: only the ${onlySide} that reduces net delta` : null,
+    onlySide ? (unwind ? `unwinding: only the ${onlySide} that sells the inventory down` : `frozen: only the ${onlySide} that reduces net delta`) : null,
     retire.length ? `${retire.length} quote(s) off: mark moved past ${requote * 10_000} bps or expiry near` : null,
     quotes.length ? `quoting ${quotes.map((q) => q.side).join(" and ")} ${spread} bps off ${v.mark}` : null,
     ...reasons,
@@ -115,8 +122,6 @@ export function citizenDecision(v, { side: wanted = "buy", tolBps = 60, rate = 0
 const closingSoon = (q, now) => q.expiresAt && Date.parse(q.expiresAt) - now < 60_000;
 /** Strike's BTC-USD step: quote sizes are multiples of it, so a hedge is the same size. */
 export const STEP_BTC = 0.00001;
-const floor8 = (x) => Math.floor(x / STEP_BTC + 1e-9) * STEP_BTC;
+/** A value rounded to the decimals of a step or tick (0.00001 → 5 places, 1 → 0), so float noise never reaches an order. */
+const roundTo = (x, unit) => { const places = Math.max(0, Math.ceil(-Math.log10(unit) - 1e-9)); return Number(x.toFixed(places)); };
 // prices round away from the mark, so a quote never lands inside the spread it was meant to keep
-const ceil1 = (x) => Math.ceil(x * 10 - 1e-6) / 10;
-const floor1 = (x) => Math.floor(x * 10 + 1e-6) / 10;
-const round8 = (x) => Math.round(x * 1e8) / 1e8;

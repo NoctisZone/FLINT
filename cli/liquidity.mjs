@@ -8,53 +8,65 @@
  *
  *   npm run liquidity
  *
- * Settings: LIQUIDITY_SIZE_BTC (0.01), LIQUIDITY_SPREAD_BPS (10),
- * LIQUIDITY_REDUCE_BPS (5), LIQUIDITY_MAX_POSITION_BTC (0.05),
- * LIQUIDITY_EVERY_MS (5000), LIQUIDITY_SYMBOL (BTC-USD).
+ * Settings: LIQUIDITY_SYMBOLS (BTC-USD,ADA-USD,SOL-USD; LIQUIDITY_SYMBOL still
+ * names one), LIQUIDITY_SIZE_USD (800 a side, in the market's base asset
+ * at the mark), LIQUIDITY_SPREAD_BPS (10), LIQUIDITY_REDUCE_BPS (5),
+ * LIQUIDITY_MAX_POSITION_USD (4000), LIQUIDITY_EVERY_MS (5000).
+ * LIQUIDITY_SIZE_BTC and LIQUIDITY_MAX_POSITION_BTC still set BTC-USD alone.
  */
 import { strikeClient, TESTNET } from "../gateway/strike.mjs";
 import { liquidityPlan } from "../gateway/liquidity.mjs";
 
 const log = (...x) => console.log(`[${new Date().toISOString().slice(11, 19)}]`, ...x);
 const num = (name, dflt) => (process.env[name] ? Number(process.env[name]) : dflt);
-const symbol = process.env.LIQUIDITY_SYMBOL || "BTC-USD";
+const symbols = (process.env.LIQUIDITY_SYMBOLS || process.env.LIQUIDITY_SYMBOL || "BTC-USD,ADA-USD,SOL-USD").split(",").map((s) => s.trim()).filter(Boolean);
 const key = process.env.STRIKE_LIQUIDITY_KEY || process.env.STRIKE_KEY;
 if (!key) { console.error("no STRIKE_LIQUIDITY_KEY or STRIKE_KEY"); process.exit(2); }
 const PREFIX = "liq";
-const settings = { sizeBtc: num("LIQUIDITY_SIZE_BTC", 0.01), spreadBps: num("LIQUIDITY_SPREAD_BPS", 10), reduceBps: num("LIQUIDITY_REDUCE_BPS", 5), maxPositionBtc: num("LIQUIDITY_MAX_POSITION_BTC", 0.05) };
+const sizeUsd = num("LIQUIDITY_SIZE_USD", 800);
+const maxPositionUsd = num("LIQUIDITY_MAX_POSITION_USD", 4000);
+const spreadBps = num("LIQUIDITY_SPREAD_BPS", 10), reduceBps = num("LIQUIDITY_REDUCE_BPS", 5);
 const everyMs = num("LIQUIDITY_EVERY_MS", 5000);
 
 const c = strikeClient({ baseUrl: process.env.STRIKE_API_URL || TESTNET, privateKeyHex: key });
 await c.syncClock();
-const rules = await c.market(symbol);
-const tick = Number(rules.order_tick_price ?? 0.1);
-log(`liquidity on ${symbol}: ${settings.sizeBtc} BTC a side, ${settings.spreadBps} bps (${settings.reduceBps} on the reducing side), tick ${tick}, cap ${settings.maxPositionBtc} BTC`);
-
-let lastPosition = null;
-let fills = 0;
+// one book per symbol: its rules, its last position, its orders carry the symbol in their id
+const books = new Map();
+for (const symbol of symbols) {
+  const rules = await c.market(symbol);
+  const tick = Number(rules.order_tick_price ?? 0.1), step = Number(rules.order_limit_step_size ?? 0.00001);
+  const places = Math.max(0, Math.ceil(-Math.log10(step) - 1e-9));
+  books.set(symbol, { symbol, tick, step, places, prefix: `${PREFIX}-${symbol.split("-")[0].toLowerCase()}`, lastPosition: null, fills: 0 });
+  log(`liquidity on ${symbol}: ${sizeUsd} USD a side, ${spreadBps} bps (${reduceBps} on the reducing side), tick ${tick}, step ${step}, cap ${maxPositionUsd} USD`);
+}
 let stopping = false;
 
-async function mine() {
-  const r = await c.openOrders(symbol);
-  return (r.orders ?? []).filter((o) => String(o.ClientOrderID ?? "").startsWith(`${PREFIX}-`)).map((o) => ({ clientOrderId: o.ClientOrderID, side: String(o.Side).toLowerCase(), price: Number(o.Price) }));
+async function mine(b) {
+  const r = await c.openOrders(b.symbol);
+  return (r.orders ?? []).filter((o) => String(o.ClientOrderID ?? "").startsWith(`${b.prefix}-`)).map((o) => ({ clientOrderId: o.ClientOrderID, side: String(o.Side).toLowerCase(), price: Number(o.Price) }));
 }
 
-async function tickOnce() {
-  const mark = Number((await c.markPrice(symbol)).p);
-  const pos = (await c.positions()).positions?.find((p) => p.symbol === symbol);
+async function tickOnce(b) {
+  const mark = Number((await c.markPrice(b.symbol)).p);
+  const pos = (await c.positions()).positions?.find((p) => p.symbol === b.symbol);
   const positionBtc = pos ? Number(pos.size) : 0;
-  if (lastPosition !== null && Math.abs(positionBtc - lastPosition) > 1e-9) { fills += 1; log(`filled: position ${lastPosition} → ${positionBtc} BTC (${fills} fills so far)`); }
-  lastPosition = positionBtc;
-  const open = await mine();
-  const plan = liquidityPlan({ mark, positionBtc, open, tick, prefix: PREFIX, ...settings });
+  if (b.lastPosition !== null && Math.abs(positionBtc - b.lastPosition) > 1e-9) { b.fills += 1; log(`${b.symbol} filled: position ${b.lastPosition} → ${positionBtc} (${b.fills} fills so far)`); }
+  b.lastPosition = positionBtc;
+  const open = await mine(b);
+  // BTC-USD keeps the old settings when they are set; every market sizes in USD at its mark, on its step
+  const onStep = (x) => Number((Math.floor(x / b.step + 1e-9) * b.step).toFixed(b.places));
+  const sizeBtc = b.symbol === "BTC-USD" && process.env.LIQUIDITY_SIZE_BTC ? num("LIQUIDITY_SIZE_BTC", 0.01) : onStep(sizeUsd / mark);
+  const maxPositionBtc = b.symbol === "BTC-USD" && process.env.LIQUIDITY_MAX_POSITION_BTC ? num("LIQUIDITY_MAX_POSITION_BTC", 0.05) : onStep(maxPositionUsd / mark);
+  if (sizeBtc <= 0) return;
+  const plan = liquidityPlan({ mark, positionBtc, open, tick: b.tick, step: b.step, prefix: b.prefix, sizeBtc, spreadBps, reduceBps, maxPositionBtc });
   for (const id of plan.cancel) {
-    await c.cancel({ symbol, clientOrderId: id }).catch((err) => log(`cancel ${id}: ${err.message.slice(0, 100)}`));
+    await c.cancel({ symbol: b.symbol, clientOrderId: id }).catch((err) => log(`${b.symbol} cancel ${id}: ${err.message.slice(0, 100)}`));
   }
   for (const o of plan.place) {
     try {
-      await c.placeOrder({ symbol, side: o.side, type: "limit", size: o.size, price: o.price, timeInForce: "GTC", clientOrderId: o.clientOrderId });
-      log(`${o.side} ${o.size} at ${o.price} (mark ${mark}, position ${positionBtc})`);
-    } catch (err) { log(`place ${o.side} at ${o.price}: ${err.message.slice(0, 120)}`); }
+      await c.placeOrder({ symbol: b.symbol, side: o.side, type: "limit", size: o.size, price: o.price, timeInForce: "GTC", clientOrderId: o.clientOrderId });
+      log(`${b.symbol} ${o.side} ${o.size} at ${o.price} (mark ${mark}, position ${positionBtc})`);
+    } catch (err) { log(`${b.symbol} place ${o.side} at ${o.price}: ${err.message.slice(0, 120)}`); }
   }
 }
 
@@ -62,7 +74,7 @@ async function stop() {
   if (stopping) return;
   stopping = true;
   log("stopping: pulling orders");
-  try { for (const o of await mine()) await c.cancel({ symbol, clientOrderId: o.clientOrderId }).catch(() => {}); } catch {}
+  for (const b of books.values()) { try { for (const o of await mine(b)) await c.cancel({ symbol: b.symbol, clientOrderId: o.clientOrderId }).catch(() => {}); } catch {} }
   process.exit(0);
 }
 process.on("SIGINT", stop);
@@ -70,7 +82,7 @@ process.on("SIGTERM", stop);
 
 for (;;) {
   if (stopping) break;
-  try { await tickOnce(); } catch (err) {
+  try { for (const b of books.values()) await tickOnce(b); } catch (err) {
     log(`loop: ${err.message.slice(0, 160)}`);
     // a rate limit or an outage: back off, then resync the clock
     await new Promise((r) => setTimeout(r, everyMs * 3));

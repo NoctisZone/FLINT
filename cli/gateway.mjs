@@ -41,10 +41,11 @@ import { verifyLog } from "../gateway/log.mjs";
 import { profiles } from "../agents/profiles.mjs";
 import { claudeMaker } from "../agents/claude-maker.mjs";
 import { fileBudget, fileJournal } from "../market/llm-trader.mjs";
-import { registry, loadSignedMandate, mandateFileOf, saveSignedMandate } from "../gateway/registry.mjs";
-import { accountsFile, agentWallet, onboardSteps, orderPayments, ORDER_STEPS, treasuryWallet } from "../gateway/onboard.mjs";
+import { registry, loadSignedMandate, mandateFileOf, saveSignedMandate, orderIndexes, ONBOARD_DIR } from "../gateway/registry.mjs";
+import { MARKETS, QUOTE_TOKEN, SYMBOLS, assertMarkets, marketOf, marketOfPair } from "../gateway/markets.mjs";
+import { accountsFile, agentWallet, connectStrike, onboardSteps, orderPayments, ORDER_STEPS, topUpSteps, TOPUP_STEPS, treasuryWallet } from "../gateway/onboard.mjs";
 import { onboardJob } from "../gateway/onboard-job.mjs";
-import { withdrawSteps, WITHDRAW_STEPS } from "../gateway/withdraw.mjs";
+import { withdrawRoom, withdrawSteps, WITHDRAW_STEPS } from "../gateway/withdraw.mjs";
 import { agentKeys } from "../gateway/agent-keys.mjs";
 
 const args = process.argv.slice(2);
@@ -73,8 +74,11 @@ async function patient(what, fn, { tries = 6, waitMs = 10_000 } = {}) {
 }
 const cfg = settings();
 const pkg = await loadFactory({ log });
-const [tBTC, tUSD] = await tokenTypes(cfg, pkg.pureCircuits);
-const types = { tBTC: tBTC.type, tUSD: tUSD.type };
+// every market's base token and tUSD on the factory, so a venue can serve any pair
+const tokens = await tokenTypes(cfg, pkg.pureCircuits, [QUOTE_TOKEN, ...SYMBOLS.map((s) => MARKETS[s].token)]);
+const typeOf = (spec) => tokens.find((t) => t.token === spec).type;
+const types = { quote: typeOf(QUOTE_TOKEN), bases: Object.fromEntries(SYMBOLS.map((s) => [MARKETS[s].pair, { type: typeOf(MARKETS[s].token), decimals: MARKETS[s].decimals }])) };
+const symbolOfMandate = (mandate) => mandate.strike.markets[0] ?? marketOfPair(mandate.midnight.pairs[0])?.symbol ?? "BTC-USD";
 const all = profiles({ owner: process.env.OWNER_ADDRESS || "addr_test1…owner", expiry: new Date(Date.now() + 3 * 86_400_000).toISOString() });
 // test settings: a wider hedge deadline and position cap than the shipped profiles, for an empty testnet book
 for (const m of Object.values(all)) {
@@ -98,6 +102,18 @@ const reg = registry();
 const sharedBoard = boardKind === "gateway" ? gatewayBoard() : null;
 const entries = decisionLog(path.join("data", "decisions.jsonl"));
 const strikeBase = process.env.STRIKE_API_URL || TESTNET;
+const pub = strikeClient({ baseUrl: strikeBase });
+// each market's live rules from Strike, read once: the smallest order, the size step, the price tick
+const rules = {};
+async function rulesOf(symbol) {
+  if (!rules[symbol]) {
+    const r = await patient(`Strike market rules ${symbol}`, () => pub.market(symbol));
+    const m = marketOf(symbol);
+    rules[symbol] = { minNotionalUsd: Number(r.order_min_notional ?? m.minNotionalUsd), step: Number(r.order_limit_step_size ?? m.step), tick: Number(r.order_tick_price ?? m.tick) };
+    log(`${symbol}: smallest order ${rules[symbol].minNotionalUsd} USD, step ${rules[symbol].step}, tick ${rules[symbol].tick}`);
+  }
+  return rules[symbol];
+}
 
 /**
  * One agent for the loop: its MCP server (opened here unless `trader` is
@@ -112,7 +128,14 @@ async function buildAgent({ agentId, index, mind, side, mandate, name = agentId,
     trader = await openMcpTrader({ name: `trader-${index}`, seedHex: midnightSeedOf(cfg.master, index), key: cfg.nightgateKey, cfg, index, onProgress: (p) => { if (p.seconds % 30 === 0) log(`${agentId}: wallet syncing, ${p.seconds}s`); } });
     log(`${agentId}: wallet ready in ${Math.round((Date.now() - t0) / 1000)}s`);
   }
-  const venue = midnightVenue({ trader, agentId, types, ...(sharedBoard ? { board: sharedBoard } : {}), log: (e) => entries.append({ agent: agentId, ...e }) });
+  // a maker quotes on every market of its mandate; a citizen's venue serves every pair its mandate names
+  const symbol = symbolOfMandate(mandate);
+  const symbols = kind === "citizen" ? [] : mandate.strike.markets.length ? assertMarkets(mandate).map((m) => m.symbol) : [symbol];
+  const pairs = mandate.midnight.pairs.length ? mandate.midnight.pairs : [marketOf(symbol).pair];
+  const venue = midnightVenue({ trader, agentId, types: { quote: types.quote, bases: Object.fromEntries(pairs.map((p) => [p, types.bases[p]])) }, pair: kind === "maker" || kind === "rogue" ? marketOf(symbol).pair : pairs[0], ...(sharedBoard ? { board: sharedBoard } : {}), log: (e) => entries.append({ agent: agentId, ...e }) });
+  const rules = {};
+  for (const sym of symbols) rules[sym] = await rulesOf(sym);
+  const market = rules[symbol] ?? null;
   // an agent that onboarded itself trades on its own Strike account with its builder fee; else the shared key
   const own = accounts.read()[agentId];
   const keyName = `STRIKE_KEY_${agentId.toUpperCase().replace(/-/g, "_")}`;
@@ -130,13 +153,15 @@ async function buildAgent({ agentId, index, mind, side, mandate, name = agentId,
       else log(`${agentId}: own Strike account ${own.accountId} holds 0 USD and there is no shared key: hedges will be rejected`);
     }
     await patient(`${agentId}: Strike clock`, () => strike.syncClock());
-    const symbols = await patient(`${agentId}: Strike symbols`, () => strike.symbols());
-    const lev = symbols.symbol_settings?.["BTC-USD"]?.leverage ?? symbols.default_leverage;
-    if (lev > mandate.strike.maxLeverage) { await patient(`${agentId}: Strike leverage`, () => strike.setLeverage("BTC-USD", mandate.strike.maxLeverage)); log(`${agentId}: Strike leverage set to ${mandate.strike.maxLeverage}`); }
+    const settings = await patient(`${agentId}: Strike symbols`, () => strike.symbols());
+    for (const sym of symbols) {
+      const lev = settings.symbol_settings?.[sym]?.leverage ?? settings.default_leverage;
+      if (lev > mandate.strike.maxLeverage) { await patient(`${agentId}: Strike leverage`, () => strike.setLeverage(sym, mandate.strike.maxLeverage)); log(`${agentId}: Strike leverage on ${sym} set to ${mandate.strike.maxLeverage}`); }
+    }
     stream = (onEvent, onStatus) => userStream({ baseUrl: strike.baseUrl, privateKeyHex: keyUsed, onEvent, onStatus: (x) => { log(`${agentId}: strike stream ${x.state}${x.message ? ` ${x.message}` : ""}`); onStatus?.(x); } });
     // the books' Strike position is what Strike says it is, not what an earlier run on another account recorded
-    const pos = (await patient(`${agentId}: Strike positions`, () => strike.positions())).positions?.find((p) => p.symbol === "BTC-USD");
-    strikePositions[agentId] = pos ? Number(pos.size) : 0;
+    const positions = (await patient(`${agentId}: Strike positions`, () => strike.positions())).positions ?? [];
+    strikePositions[agentId] = Object.fromEntries(symbols.map((sym) => [sym, Number(positions.find((p) => p.symbol === sym)?.size ?? 0)]));
   } else if (kind === "maker") {
     log(`${agentId}: no Strike key (${keyName} or STRIKE_KEY); it will quote without a hedge and freeze on the first fill`);
   }
@@ -150,7 +175,7 @@ async function buildAgent({ agentId, index, mind, side, mandate, name = agentId,
   }
   // a citizen looks every round and acts on about half of them; a maker quotes 120 USD a side, above Strike's minimum and inside what a citizen's coins pay
   // the shared key serves every maker without an account of its own: its fills and position are not one agent's
-  return { agentId, name, mandate, mind: kind, side, venue, strike, stream, sharedStrike: Boolean(keyUsed) && keyUsed === process.env.STRIKE_KEY, wallets: walletsOf(agentId), trader, brain, leverage: mandate.strike.maxLeverage, signatureOk, stopped, options: kind === "citizen" ? { rate: Number(process.env.CITIZEN_RATE || 0.5) } : { sizeUsd: Number(process.env.MAKER_SIZE_USD || 120) } };
+  return { agentId, name, mandate, mind: kind, side, venue, strike, stream, sharedStrike: Boolean(keyUsed) && keyUsed === process.env.STRIKE_KEY, wallets: walletsOf(agentId), trader, brain, leverage: mandate.strike.maxLeverage, signatureOk, stopped, market: symbol, markets: symbols, rules, step: market?.step, tick: market?.tick, minQuoteUsd: market?.minNotionalUsd, options: kind === "citizen" ? { rate: Number(process.env.CITIZEN_RATE || 0.5) } : { sizeUsd: Number(process.env.MAKER_SIZE_USD || 120) } };
 }
 
 const agents = [];
@@ -179,13 +204,19 @@ const BOOKS = path.join("data", "books.json");
 const books = fs.existsSync(BOOKS) ? JSON.parse(fs.readFileSync(BOOKS, "utf8")) : {};
 const saveBooks = (agentId, snap) => { books[agentId] = snap; fs.writeFileSync(BOOKS, JSON.stringify(books, null, 1)); };
 // Strike's position wins over the books; what inventory and position then leave open is unhedged again (another account's hedge no longer counts)
-for (const [id, size] of Object.entries(strikePositions)) {
-  const b = books[id];
-  if (!b || b.strikePositionBtc === size) continue;
-  const open = Math.round((b.midnightInventoryBtc + size) * 1e8) / 1e8;
-  log(`${id}: Strike position is ${size} BTC, the books said ${b.strikePositionBtc}: taking Strike's number, ${open} BTC unhedged`);
-  b.strikePositionBtc = size;
-  b.unhedgedBtc = Math.abs(open) >= 0.00001 ? open : 0;
+for (const [id, sizes] of Object.entries(strikePositions)) {
+  const all = books[id];
+  if (!all) continue;
+  // the first market's books are the flat ones; every further market's sit under `legs`
+  for (const [i, [sym, size]] of Object.entries(sizes).entries()) {
+    const b = i === 0 ? all : (all.legs ??= {})[sym] ??= { midnightInventoryBtc: 0, strikePositionBtc: 0, unhedgedBtc: 0 };
+    if (b.strikePositionBtc === size) continue;
+    const open = Math.round(((b.midnightInventoryBtc ?? 0) + size) * 1e8) / 1e8;
+    log(`${id}: Strike position on ${sym} is ${size}, the books said ${b.strikePositionBtc}: taking Strike's number, ${open} unhedged`);
+    b.strikePositionBtc = size;
+    b.unhedgedBtc = Math.abs(open) >= 0.00001 ? open : 0;
+    if (i === 0) (all.legs ??= {})[sym] = { midnightInventoryBtc: b.midnightInventoryBtc ?? 0, strikePositionBtc: size, unhedgedBtc: b.unhedgedBtc };
+  }
 }
 runStart.books = structuredClone(books);
 for (const [id, b] of Object.entries(books)) if (ids().includes(id)) log(`${id}: books from the last run: inventory ${b.midnightInventoryBtc} BTC, Strike ${b.strikePositionBtc} BTC, unhedged ${b.unhedgedBtc} BTC${b.frozen ? `, frozen (${b.frozenReason})` : ""}`);
@@ -209,7 +240,7 @@ function paidCall(payment, what, agent, extra = {}) {
 const ownerUrl = (process.env.PUBLIC_OWNER_URL || `http://localhost:${port}/owner/`).replace(/\/?$/, "/");
 const treasury = treasuryWallet(cfg.master); // the project wallet: where fees go unless X402_PAY_TO says otherwise
 /** What a new agent costs its owner; the fee goes where x402 payments go. */
-const pricing = { feeAda: Number(process.env.SETUP_FEE_ADA ?? 20), feeClaudeAda: Number(process.env.SETUP_FEE_CLAUDE_ADA ?? 40), keyAda: Number(ownerPrices.key) / 1e6, minDepositAda: Number(process.env.MIN_DEPOSIT_ADA ?? 500), payTo: process.env.X402_PAY_TO || treasury.address };
+const pricing = { feeAda: Number(process.env.SETUP_FEE_ADA ?? 20), feeClaudeAda: Number(process.env.SETUP_FEE_CLAUDE_ADA ?? 40), keyAda: Number(ownerPrices.key) / 1e6, minDepositAda: Number(process.env.MIN_DEPOSIT_ADA ?? 500), minTopUpAda: Number(process.env.MIN_TOPUP_ADA ?? 50), payTo: process.env.X402_PAY_TO || treasury.address };
 feed.setOrders({ ...pricing, x402: Boolean(x402) });
 feed.setLiquidity(process.env.STRIKE_LIQUIDITY_NOTE || null);
 feed.setBoard(boardKind);
@@ -217,7 +248,7 @@ log(`midnight board: ${boardKind}`);
 const owner = ownerApi({
   agents, log: (e) => entries.append(e),
   // the gateway is built a few lines down; the handler only runs once it exists
-  gateway: { freeze: (...x) => g.freeze(...x), resume: (...x) => g.resume(...x), stop: (...x) => g.stop(...x), close: (...x) => g.close(...x), setMandate: (...x) => g.setMandate(...x), stateOf: (...x) => g.stateOf(...x) },
+  gateway: { freeze: (...x) => g.freeze(...x), resume: (...x) => g.resume(...x), stop: (...x) => g.stop(...x), unwind: (...x) => g.unwind(...x), close: (...x) => g.close(...x), setMandate: (...x) => g.setMandate(...x), stateOf: (...x) => g.stateOf(...x) },
   // the signed mandate outlives the run, and the vault gets its new hash
   onMandate: async (a, sig) => {
     const file = saveSignedMandate(a.agentId, { mandate: a.mandate, signature: sig, hash: sig.hash });
@@ -225,8 +256,11 @@ const owner = ownerApi({
     anchorMandate(a).catch((err) => log(`${a.agentId}: anchor after signing failed: ${err.message.slice(0, 120)}`));
   },
   onboarding: { create: (spec) => createAgent(spec), get: (id) => jobs.get(id)?.view() ?? null, retry: async (id) => { const j = jobs.get(id); j.retry().catch(() => {}); await new Promise((r) => setImmediate(r)); return j.view(); } },
-  // the pricing, the payments and the payouts are built a few lines down; the handlers only run once they exist
-  pricing, payments: { build: (...x) => payments.build(...x), submit: (...x) => payments.submit(...x) }, withdrawals: { start: (...x) => withdrawals.start(...x), list: (...x) => withdrawals.list(...x) },
+  // the pricing, the payments, the payouts and the deposits are built a few lines down; the handlers only run once they exist
+  pricing, payments: { build: (...x) => payments.build(...x), submit: (...x) => payments.submit(...x) },
+  withdrawals: { start: (...x) => withdrawals.start(...x), list: (...x) => withdrawals.list(...x), retry: (...x) => withdrawals.retry(...x), room: (...x) => withdrawals.room(...x) },
+  deposits: { start: (...x) => deposits.start(...x), build: (...x) => deposits.build(...x), submit: (...x) => deposits.submit(...x), list: (...x) => deposits.list(...x), retry: (...x) => deposits.retry(...x) },
+  strikeKeys: { info: (id) => { const o = accounts.read()[id]; return o ? { accountId: o.accountId, publicKey: o.apiWalletPublicKeyHex, connectedAt: o.connectedAt ?? null } : null; }, rotate: (id) => rotateStrikeKey(id) },
   keys,
   // wallet sessions outlive a restart, so the page's owner keeps following its agents (tokens, mode 600)
   sessionStore: { load: () => (fs.existsSync(SESSIONS) ? JSON.parse(fs.readFileSync(SESSIONS, "utf8")) : []), save: (entries) => { fs.mkdirSync("data", { recursive: true }); fs.writeFileSync(SESSIONS, JSON.stringify(entries), { mode: 0o600 }); } },
@@ -236,16 +270,19 @@ if (x402) log(`x402 on: ${Object.entries(prices).map(([k, v]) => `${k} ${Number(
 const server = await feedServer(feed, { port, host: "0.0.0.0", staticDir: fileURLToPath(new URL("../arena/", import.meta.url)), handlers: [owner.handle] });
 feed.setOwner(true);
 log(`feed on http://localhost:${server.address().port}/feed/meta`);
-const pub = strikeClient({ baseUrl: strikeBase });
-const mark = async () => { const p = await pub.markPrice("BTC-USD"); return { mark: Number(p.p), funding: Number(p.r) }; };
+// the mark of every market each round, for the agents and the page's chart; a market Strike does not answer for keeps its last value
+const lastMarks = {};
+const mark = async () => {
+  await Promise.all(SYMBOLS.map(async (s) => { try { const p = await pub.markPrice(s); lastMarks[s] = { mark: Number(p.p), funding: Number(p.r) }; } catch (err) { log(`${s}: mark: ${err.message.slice(0, 80)}`); } }));
+  return { markets: { ...lastMarks } };
+};
 // a quote smaller than Strike's minimum order could never be hedged
-const minHedgeUsd = Number((await patient("Strike market rules", () => pub.market("BTC-USD"))).order_min_notional ?? 0);
-log(`Strike minimum hedge notional: ${minHedgeUsd} USD`);
+for (const s of SYMBOLS) await rulesOf(s);
+const minHedgeUsd = rules["BTC-USD"].minNotionalUsd;
 
 const g = gateway({ agents, mark, feed, books, saveBooks, minHedgeUsd, log: (e) => { const full = entries.append(e); log(`${e.agent ?? "gateway"}: ${e.kind}${e.rule ? ` ${e.rule}` : ""}${e.reason ? ` — ${e.reason}` : ""}${e.error ? ` — ${e.error}` : ""}`); return full; } });
 
 // a new agent from the page: its onboarding job runs here, one at a time, and is written to data/onboard/<id>.json
-const ONBOARD_DIR = path.join("data", "onboard");
 const chain = process.env.ODATANO_ACCESS_KEY ? odatano({ key: process.env.ODATANO_ACCESS_KEY, baseUrl: process.env.ODATANO_ACCESS_URL || undefined }) : koios();
 const jobFile = (agentId) => path.join(ONBOARD_DIR, `${agentId}.json`);
 // mints are sponsored one after the other: two orders at once take turns
@@ -256,8 +293,8 @@ function jobFor({ agentId, index, owner: ownerAddress, mind, spec, payment = nul
   const steps = onboardSteps({
     agentId, index, mandate, wallet, owner: ownerAddress,
     fee: { lovelace: BigInt(spec.feeLovelace), to: pricing.payTo, paid: payment }, depositLovelace: BigInt(spec.depositLovelace),
-    mint: mintInTurn,
-    mark: async () => (await mark()).mark, minQuoteUsd: minHedgeUsd,
+    mint: mintInTurn, markets: assertMarkets(mandate).map((m) => ({ ...m, minNotionalUsd: (rules[m.symbol] ?? m).minNotionalUsd })),
+    marks: async () => (await mark()).markets,
     strike: { baseUrl: strikeBase, code: process.env.STRIKE_BUILDER_CODE, feeShareBps: mandate.strike.builderFeeBps || Number(process.env.STRIKE_BUILDER_FEE_BPS || 10), accounts, chain, master: cfg.master, clientOf: (privateKeyHex) => strikeClient({ baseUrl: strikeBase, privateKeyHex }) },
     // an agent the loop already holds (after a restart) keeps its open wallet: two servers never open one wallet
     open: async () => agents.find((a) => a.agentId === agentId)?.trader ?? openMcpTrader({ name: `trader-${index}`, seedHex: midnightSeedOf(cfg.master, index), key: cfg.nightgateKey, cfg, index, onProgress: (p) => { if (p.seconds % 30 === 0) log(`${agentId}: wallet syncing, ${p.seconds}s`); } }),
@@ -290,7 +327,8 @@ function jobFor({ agentId, index, owner: ownerAddress, mind, spec, payment = nul
 }
 async function createAgent({ agentId, mind, pay, depositLovelace, feeLovelace, toolsKey, payment = null, owner: ownerAddress, mandate, signature, hash }) {
   if (!process.env.STRIKE_BUILDER_CODE) throw Object.assign(new Error("STRIKE_BUILDER_CODE is not set on this gateway"), { status: 503 });
-  const index = reg.nextIndex(usedIndexes);
+  // a wallet index is never handed out twice: built-ins, registered agents and every saved order, finished or not
+  const index = reg.nextIndex([...usedIndexes, ...orderIndexes(ONBOARD_DIR), ...[...jobs.values()].map((j) => j.job.index)]);
   saveSignedMandate(agentId, { mandate, signature, hash });
   const spec = { pay, depositLovelace: String(depositLovelace), feeLovelace: String(feeLovelace), toolsKey };
   const j = jobFor({ agentId, index, owner: ownerAddress, mind, spec, payment, mandate });
@@ -304,19 +342,19 @@ const payments = orderPayments({ jobOf: (id) => jobs.get(id) ?? null, chain, log
 // payouts: one job per request, written to data/withdrawals/<agent>-<time>.json, the ones of this run kept in memory
 const WITHDRAW_DIR = path.join("data", "withdrawals");
 const withdrawJobs = new Map(); // agentId → jobs, newest last
+const withdrawJob = (a, usd, stamp, saved = null) => onboardJob({
+  agentId: a.agentId, index: null, owner: a.mandate.owner, mind: null, kind: "withdraw", order: WITHDRAW_STEPS, spec: { usd }, saved,
+  steps: withdrawSteps({ agentId: a.agentId, wallet: agentWallet(cfg.master, a.agentId), owner: a.mandate.owner, strike: a.strike, chain, usd, log: (e) => entries.append(e) }),
+  save: (job) => { fs.mkdirSync(WITHDRAW_DIR, { recursive: true }); fs.writeFileSync(path.join(WITHDRAW_DIR, `${a.agentId}-${stamp}.json`), JSON.stringify(job, null, 1), { mode: 0o600 }); },
+  onChange: (job) => { if (job.status !== "running") log(`${a.agentId}: payout ${job.status}${job.error ? `: ${job.error}` : ""}`); },
+});
 const withdrawals = {
   async start(agentId, usd) {
     const a = agents.find((x) => x.agentId === agentId);
     if (!a?.strike || a.sharedStrike) throw Object.assign(new Error("this agent has no Strike account of its own"), { status: 409 });
     const mine = withdrawJobs.get(agentId) ?? [];
     if (mine.some((j) => j.running)) throw Object.assign(new Error("a payout is on its way already"), { status: 409 });
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const j = onboardJob({
-      agentId, index: null, owner: a.mandate.owner, mind: null, kind: "withdraw", order: WITHDRAW_STEPS, spec: { usd },
-      steps: withdrawSteps({ agentId, wallet: agentWallet(cfg.master, agentId), owner: a.mandate.owner, strike: a.strike, chain, usd, log: (e) => entries.append(e) }),
-      save: (job) => { fs.mkdirSync(WITHDRAW_DIR, { recursive: true }); fs.writeFileSync(path.join(WITHDRAW_DIR, `${agentId}-${stamp}.json`), JSON.stringify(job, null, 1), { mode: 0o600 }); },
-      onChange: (job) => { if (job.status !== "running") log(`${agentId}: payout ${job.status}${job.error ? `: ${job.error}` : ""}`); },
-    });
+    const j = withdrawJob(a, usd, new Date().toISOString().replace(/[:.]/g, "-"));
     mine.push(j); withdrawJobs.set(agentId, mine);
     j.run().catch((err) => log(`${agentId}: payout: ${err.message}`));
     await new Promise((r) => setImmediate(r));
@@ -324,7 +362,86 @@ const withdrawals = {
   },
   list: (agentId) => (withdrawJobs.get(agentId) ?? []).map((j) => j.view()).reverse(),
   retry: (agentId) => { const j = (withdrawJobs.get(agentId) ?? []).at(-1); if (!j) throw Object.assign(new Error("no payout to retry"), { status: 404 }); j.retry().catch(() => {}); return j.view(); },
+  /** What Strike lets go right now, asked at most every 20 s per agent: the page polls it. */
+  async room(agentId) {
+    const a = agents.find((x) => x.agentId === agentId);
+    if (!a?.strike || a.sharedStrike) return null;
+    const c = rooms.get(agentId);
+    if (c && Date.now() - c.at < 20_000) return c.room;
+    const room = await withdrawRoom({ strike: a.strike });
+    rooms.set(agentId, { at: Date.now(), room });
+    return room;
+  },
 };
+const rooms = new Map(); // agentId → { at, room }
+
+// a further deposit: one job per request, written to data/deposits/<agent>-<time>.json; the owner pays it as an order
+const DEPOSIT_DIR = path.join("data", "deposits");
+const depositJobs = new Map(); // agentId → jobs, newest last
+const ownStrike = (agentId) => { const o = accounts.read()[agentId]; if (!o) throw Object.assign(new Error("this agent has no Strike account of its own"), { status: 409 }); return strikeClient({ baseUrl: strikeBase, privateKeyHex: o.apiWalletPrivateKeyHex }); };
+const depositPayments = orderPayments({ jobOf: (id) => (depositJobs.get(id) ?? []).findLast((j) => j.job.status !== "done") ?? null, chain, log: (e) => entries.append(e) });
+const depositJob = (a, lovelace, stamp, saved = null) => onboardJob({
+  agentId: a.agentId, index: null, owner: a.mandate.owner, mind: null, kind: "deposit", order: TOPUP_STEPS, spec: { lovelace: String(lovelace) }, saved,
+  steps: topUpSteps({ agentId: a.agentId, wallet: agentWallet(cfg.master, a.agentId), owner: a.mandate.owner, lovelace, strike: ownStrike(a.agentId), chain, log: (e) => entries.append(e) }),
+  save: (job) => { fs.mkdirSync(DEPOSIT_DIR, { recursive: true }); fs.writeFileSync(path.join(DEPOSIT_DIR, `${a.agentId}-${stamp}.json`), JSON.stringify(job, null, 1), { mode: 0o600 }); },
+  onChange: (job) => { if (job.status !== "running") log(`${a.agentId}: deposit ${job.status}${job.error ? `: ${job.error}` : ""}`); },
+});
+/**
+ * Payouts and deposits of earlier runs, read back from disk: a finished one is listed, a failed or interrupted
+ * one can be retried by its owner. The file name carries the agent and the stamp.
+ */
+function reloadJobs(dir, jobs, build) {
+  if (!fs.existsSync(dir)) return;
+  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith(".json")).sort()) {
+    let saved;
+    try { saved = JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")); } catch { continue; }
+    const a = agents.find((x) => x.agentId === saved.agentId);
+    if (!a || !saved.spec) continue;
+    const stamp = f.slice(saved.agentId.length + 1, -".json".length);
+    try { const list = jobs.get(a.agentId) ?? []; list.push(build(a, saved, stamp)); jobs.set(a.agentId, list); } catch (err) { log(`${a.agentId}: ${f}: ${err.message}`); }
+  }
+}
+const deposits = {
+  async start(agentId, lovelace) {
+    const a = agents.find((x) => x.agentId === agentId);
+    if (!a) throw Object.assign(new Error("no such agent"), { status: 404 });
+    ownStrike(agentId);
+    const mine = depositJobs.get(agentId) ?? [];
+    if (mine.some((j) => j.job.status !== "done")) throw Object.assign(new Error("a deposit is under way already; finish or retry it first"), { status: 409 });
+    const j = depositJob(a, lovelace, new Date().toISOString().replace(/[:.]/g, "-"));
+    mine.push(j); depositJobs.set(agentId, mine);
+    j.run().catch((err) => log(`${agentId}: deposit: ${err.message}`));
+    await new Promise((r) => setImmediate(r));
+    return j.view();
+  },
+  build: (agentId, body) => depositPayments.build(agentId, body),
+  submit: (agentId, body) => depositPayments.submit(agentId, body),
+  list: (agentId) => (depositJobs.get(agentId) ?? []).map((j) => j.view()).reverse(),
+  retry: (agentId) => { const j = (depositJobs.get(agentId) ?? []).at(-1); if (!j) throw Object.assign(new Error("no deposit to retry"), { status: 404 }); j.retry().catch(() => {}); return j.view(); },
+};
+// payouts and deposits of earlier runs, for their owners' lists and retries
+reloadJobs(WITHDRAW_DIR, withdrawJobs, (a, saved, stamp) => withdrawJob(a, Number(saved.spec.usd), stamp, saved));
+reloadJobs(DEPOSIT_DIR, depositJobs, (a, saved, stamp) => depositJob(a, BigInt(saved.spec.lovelace), stamp, saved));
+
+/** A fresh Strike API wallet for a running agent: builder connect again on its own Cardano wallet, the loop swapped onto the new key. */
+async function rotateStrikeKey(agentId) {
+  const a = agents.find((x) => x.agentId === agentId);
+  if (!a) throw Object.assign(new Error("no such agent"), { status: 404 });
+  const before = accounts.read()[agentId];
+  if (!before) throw Object.assign(new Error("this agent has no Strike account of its own"), { status: 409 });
+  if (!process.env.STRIKE_BUILDER_CODE) throw Object.assign(new Error("STRIKE_BUILDER_CODE is not set on this gateway"), { status: 503 });
+  const acc = await connectStrike({ agentId, wallet: agentWallet(cfg.master, agentId), master: cfg.master, accounts, baseUrl: strikeBase, code: process.env.STRIKE_BUILDER_CODE, feeShareBps: before.feeShareBps ?? a.mandate.strike.builderFeeBps ?? Number(process.env.STRIKE_BUILDER_FEE_BPS || 10) });
+  if (acc.accountId !== before.accountId) log(`${agentId}: builder connect answered account ${acc.accountId}, the agent had ${before.accountId}`);
+  const builderFeeBps = Math.min(acc.feeShareBps ?? 0, Number(process.env.STRIKE_BUILDER_FEE_BPS || acc.feeShareBps || 0));
+  const strike = strikeClient({ baseUrl: strikeBase, privateKeyHex: acc.apiWalletPrivateKeyHex, builderFeeBps });
+  await patient(`${agentId}: Strike clock`, () => strike.syncClock());
+  const stream = (onEvent, onStatus) => userStream({ baseUrl: strike.baseUrl, privateKeyHex: acc.apiWalletPrivateKeyHex, onEvent, onStatus: (x) => { log(`${agentId}: strike stream ${x.state}${x.message ? ` ${x.message}` : ""}`); onStatus?.(x); } });
+  await g.setStrike(agentId, { strike, stream });
+  a.sharedStrike = false;
+  rooms.delete(agentId);
+  log(`${agentId}: Strike key rotated, API wallet ${acc.apiWalletPublicKeyHex.slice(0, 12)}… on account ${acc.accountId}`);
+  return { accountId: acc.accountId, publicKey: acc.apiWalletPublicKeyHex, connectedAt: acc.connectedAt, sameAccount: acc.accountId === before.accountId };
+}
 // jobs a restart cut short come back failed, for their owner to retry
 if (fs.existsSync(ONBOARD_DIR)) {
   for (const f of fs.readdirSync(ONBOARD_DIR).filter((x) => x.endsWith(".json"))) {
@@ -352,6 +469,7 @@ async function shutdown() {
   // a wallet an onboarding job opened but never handed to the loop
   for (const j of jobs.values()) if (j.ctx.trader && !ids().includes(j.agentId)) await j.ctx.trader.close().catch(() => {});
   for (const list of withdrawJobs.values()) for (const j of list) if (j.running) log(`${j.agentId}: a payout was under way; its owner can retry`);
+  for (const list of depositJobs.values()) for (const j of list) if (j.running) log(`${j.agentId}: a deposit was under way; its owner can retry`);
   server.close();
   process.exit(0);
 }
@@ -458,7 +576,8 @@ async function attestBadges() {
 // the reconciler: this run's decision log against Strike's own fill history, per maker; the four badge claims go to the feed
 async function refreshReconcile() {
   const file = path.join("data", "decisions.jsonl");
-  const chain = verifyLog(file);
+  // this run's part of the chain: an older break in the file does not make this run's record unverifiable
+  const chain = verifyLog(file, { fromSeq: runStart.seq });
   const whole = fs.readFileSync(file, "utf8").split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l));
   // this run only: from its own run.start entry
   const all = whole.slice(whole.findIndex((e) => e.kind === "run.start" && e.seq === runStart.seq));
@@ -474,7 +593,7 @@ async function refreshReconcile() {
       const r = reconcile({ entries, strikeFills: fills, mandate: a.mandate, startDeltaBtc: (carried.midnightInventoryBtc ?? 0) + (carried.strikePositionBtc ?? 0) });
       report.agents[a.agentId] = { ok: r.ok, counts: r.counts, claims: r.claims, violations: r.violations, maxLatencyMs: r.maxLatencyMs };
       lastReconcile.set(a.agentId, { asOf: report.asOf, claims: r.claims, counts: r.counts });
-      feed.proof(a.agentId, { reconciled: report.asOf, claims: r.claims, violations: r.violations, counts: r.counts, logChain: chain.ok ? `${chain.entries} entries, chain intact` : `broken at ${chain.brokenAt}` });
+      feed.proof(a.agentId, { reconciled: report.asOf, claims: r.claims, violations: r.violations, counts: r.counts, logChain: chain.ok ? `${chain.entries} entries this run, chain intact` : `broken at ${chain.brokenAt}` });
       log(`${a.agentId}: reconcile — ${r.ok ? "0 violations" : `${r.violations.length} violation(s): ${[...new Set(r.violations.map((v) => v.rule))].join(", ")}`}; ${r.counts.midnightFills} Midnight fills, ${r.counts.strikeFills} Strike fills, max fill-to-hedge ${Math.round(r.maxLatencyMs / 100) / 10}s; log ${chain.ok ? "intact" : "BROKEN"}`);
     } catch (err) { log(`${a.agentId}: reconcile: ${err.message}`); }
   }
@@ -482,7 +601,7 @@ async function refreshReconcile() {
 }
 
 // orders a previous run left on Strike are unknown to this one; the books carry their exposure, so pull them
-for (const a of agents) if (a.strike) { const open = await patient(`${a.agentId}: Strike open orders`, () => a.strike.openOrders("BTC-USD")); if (open.count > 0) { await patient(`${a.agentId}: Strike cancel`, () => a.strike.cancelAll("BTC-USD")); log(`${a.agentId}: pulled ${open.count} order(s) left on Strike by an earlier run`); } }
+for (const a of agents) if (a.strike) for (const sym of a.markets ?? [a.market ?? "BTC-USD"]) { const open = await patient(`${a.agentId}: Strike open orders`, () => a.strike.openOrders(sym)); if (open.count > 0) { await patient(`${a.agentId}: Strike cancel`, () => a.strike.cancelAll(sym)); log(`${a.agentId}: pulled ${open.count} ${sym} order(s) left on Strike by an earlier run`); } }
 await g.rehedge();
 await anchorMandates();
 

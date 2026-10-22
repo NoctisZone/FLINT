@@ -209,6 +209,8 @@ export function decodeUtxoHex(hex) {
  * the change back to `from`; no TTL, no metadata. `utxos` as Koios returns
  * them. Signed by the sender's wallet or by a CIP-30 `signTx`.
  */
+// the smallest ADA-only output Conway accepts is about 1 ADA on a base address; a change under this stays with the fee
+export const MIN_OUTPUT_LOVELACE = 1_200_000n;
 export function buildUnsignedTransfer({ from, utxos, to, lovelace, outputs: given, feeLovelace = 200_000n }) {
   const fromBytes = typeof from === "string" ? addressBytesOf(from) : from;
   const outs = (given ?? [{ to, lovelace }]).map((o) => [addressBytesOf(o.to), BigInt(o.lovelace)]);
@@ -221,10 +223,15 @@ export function buildUnsignedTransfer({ from, utxos, to, lovelace, outputs: give
     sum += BigInt(u.value);
   }
   if (sum < need) throw new Error(`not enough ADA: ${Number(sum) / 1e6} on the wallet, ${Number(need) / 1e6} needed`);
-  const change = sum - need;
+  // change under the smallest output the ledger takes: more inputs make it bigger, or it goes into the fee
+  const rest = [...utxos].filter((u) => !picked.includes(u)).sort((a, b) => (BigInt(b.value) > BigInt(a.value) ? 1 : -1));
+  while (sum - need > 0n && sum - need < MIN_OUTPUT_LOVELACE && rest.length) { const u = rest.shift(); picked.push(u); sum += BigInt(u.value); }
+  let change = sum - need;
+  let fee = feeLovelace;
+  if (change > 0n && change < MIN_OUTPUT_LOVELACE) { fee += change; change = 0n; }
   const outputs = [...outs];
   if (change > 0n) outputs.push([fromBytes, change]);
-  const body = new Map([[0n, picked.map((u) => [Buffer.from(u.tx_hash, "hex"), BigInt(u.tx_index)])], [1n, outputs], [2n, feeLovelace]]);
+  const body = new Map([[0n, picked.map((u) => [Buffer.from(u.tx_hash, "hex"), BigInt(u.tx_index)])], [1n, outputs], [2n, fee]]);
   const bodyRaw = cborEncode(body);
   const cborHex = Buffer.concat([Buffer.from([0x84]), Buffer.from(bodyRaw), Buffer.from(cborEncode(new Map())), Buffer.from([0xf5, 0xf6])]).toString("hex");
   return { cborHex, txHash: txHashOf(bodyRaw), inputs: picked.length, change };

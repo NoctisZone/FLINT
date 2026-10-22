@@ -15,6 +15,7 @@ const STEP_BTC = 0.00001;
  * @param {number} o.positionBtc          signed
  * @param {Array<{clientOrderId, side: "buy"|"sell", price: number}>} o.open   this account's resting orders
  * @param {number} [o.sizeBtc]
+ * @param {number} [o.step]       the market's size step; BTC-USD's by default
  * @param {number} [o.spreadBps]          each side's distance from the mark
  * @param {number} [o.reduceBps]          the reducing side's distance
  * @param {number} [o.requoteBps]         replace an order whose price is this far from where it should be; default half the spread
@@ -24,7 +25,7 @@ const STEP_BTC = 0.00001;
  * @param {number} [o.now]                ms, for the clientOrderIds
  * @returns {{ cancel: string[], place: Array<{side, price, size, clientOrderId}>, wanted: {buy: number|null, sell: number|null} }}
  */
-export function liquidityPlan({ mark, positionBtc = 0, open = [], sizeBtc = 0.01, spreadBps = 10, reduceBps = 5, requoteBps, tick = 0.1, maxPositionBtc = 0.05, prefix = "liq", now = Date.now() }) {
+export function liquidityPlan({ mark, positionBtc = 0, open = [], sizeBtc = 0.01, spreadBps = 10, reduceBps = 5, requoteBps, tick = 0.1, step = STEP_BTC, maxPositionBtc = 0.05, prefix = "liq", now = Date.now() }) {
   const requote = (requoteBps ?? spreadBps / 2) / 10_000;
   const reducing = positionBtc > 0 ? "sell" : positionBtc < 0 ? "buy" : null;
   const capped = Math.abs(positionBtc) >= maxPositionBtc - 1e-12;
@@ -38,7 +39,7 @@ export function liquidityPlan({ mark, positionBtc = 0, open = [], sizeBtc = 0.01
   }
   const cancel = [];
   const place = [];
-  const size = Math.round(Math.floor(sizeBtc / STEP_BTC + 1e-9) * STEP_BTC * 1e8) / 1e8;
+  const size = Number((Math.floor(sizeBtc / step + 1e-9) * step).toFixed(Math.max(0, Math.ceil(-Math.log10(step) - 1e-9))));
   for (const side of ["buy", "sell"]) {
     const mine = open.filter((o) => o.side === side);
     const want = wanted[side];

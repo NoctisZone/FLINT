@@ -35,8 +35,9 @@ const r8 = (x) => Math.round(x * 1e8) / 1e8;
  * @param {(snapshot) => void} [o.onChange]
  * @param {(hedged: {fill, hedge, latencyMs}) => void} [o.onHedged]   a Midnight fill is fully hedged (or netted, or closed as dust)
  * @param {boolean} [o.ownAccount]          false when the Strike key is shared: position events then describe other agents too and are ignored
+ * @param {string} [o.prefix]               the start of this hedger's order ids; an agent on several markets gives each hedger its own
  */
-export function hedger({ mandate, symbol, strike, check = defaultCheck, log = () => {}, now = Date.now, state: init = {}, stepBtc = 0.00001, minNotionalUsd = 0, dustUsd = 5, onChange = () => {}, onHedged = () => {}, ownAccount = true }) {
+export function hedger({ mandate, symbol, strike, check = defaultCheck, log = () => {}, now = Date.now, state: init = {}, stepBtc = 0.00001, minNotionalUsd = 0, dustUsd = 5, onChange = () => {}, onHedged = () => {}, ownAccount = true, prefix = `${mandate.agentId}-` }) {
   const s = {
     mandate, signatureOk: true, frozen: false, frozenReason: null, manual: false,
     mark: 0, strikePositionBtc: 0, leverage: mandate.strike.maxLeverage, midnightInventoryBtc: 0, unhedgedBtc: 0,
@@ -187,7 +188,7 @@ export function hedger({ mandate, symbol, strike, check = defaultCheck, log = ()
     }
     const mineToCover = exposures.filter((e) => !covered(e) && Math.sign(e.remaining) === Math.sign(need));
     const oldest = mineToCover.reduce((m, e) => Math.min(m, e.at), now());
-    const clientOrderId = rest ? `${rest}-L` : `${mandate.agentId}-hedge-${++seq}-${now()}`;
+    const clientOrderId = rest ? `${rest}-L` : `${prefix}hedge-${++seq}-${now()}`;
     const p = { side, sizeBtc, filledBtc: 0, resting: Boolean(rest), deadline: oldest + mandate.risk.hedgeWithinSec * 1000, placedAt: now(), lateLogged: false };
     pending.set(clientOrderId, p);
     for (const e of mineToCover) e.coveredBy = rest ? null : clientOrderId;
@@ -209,6 +210,8 @@ export function hedger({ mandate, symbol, strike, check = defaultCheck, log = ()
 
   /** A Strike stream event (see strike-stream.mjs classify). */
   async function onStrikeEvent(e) {
+    // an agent on several markets has a hedger per market: another market's event is not this one's
+    if (e.symbol && e.symbol !== symbol) return;
     try { await strikeEvent(e); } finally { changed(); }
   }
 

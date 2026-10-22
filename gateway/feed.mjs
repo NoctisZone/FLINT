@@ -12,7 +12,7 @@ const KEEP = 2000;
 
 export function feedState({ runStart = new Date().toISOString(), networks = { midnight: "preprod", strike: "testnet" } } = {}) {
   const s = {
-    meta: { runStart, networks, strikeMark: null, sponsorReady: null, strikeLiquidity: null, midnightBoard: "server", attestEveryMs: null, tools: null, owner: false, orders: null, marks: [], serverTime: null },
+    meta: { runStart, networks, strikeMark: null, sponsorReady: null, strikeLiquidity: null, midnightBoard: "server", attestEveryMs: null, tools: null, owner: false, orders: null, marks: [], markets: {}, serverTime: null },
     agents: new Map(),  // agentId → card
     quotes: new Map(),  // quoteId → open quote
     fills: [], decisions: [], refusals: [], proofs: new Map(),
@@ -22,6 +22,17 @@ export function feedState({ runStart = new Date().toISOString(), networks = { mi
   return {
     /** The mark now, and the last two hours of marks for a chart that is full on the first poll. */
     setMark: (mark) => { s.meta.strikeMark = mark; if (typeof mark === "number" && mark > 0) { s.meta.marks.push({ t: new Date().toISOString(), p: mark }); if (s.meta.marks.length > 240) s.meta.marks.shift(); } },
+    /** Every market's mark and funding at once (symbol → { mark, funding }); BTC-USD also fills `strikeMark` and `marks` for older readers. */
+    setMarks: (marks) => {
+      const t = new Date().toISOString();
+      for (const [symbol, m] of Object.entries(marks)) {
+        if (!(typeof m?.mark === "number" && m.mark > 0)) continue;
+        const slot = s.meta.markets[symbol] ??= { mark: null, funding: null, marks: [] };
+        slot.mark = m.mark; slot.funding = m.funding ?? null;
+        slot.marks.push({ t, p: m.mark }); if (slot.marks.length > 240) slot.marks.shift();
+      }
+      if (marks["BTC-USD"]?.mark) { s.meta.strikeMark = marks["BTC-USD"].mark; s.meta.marks = s.meta.markets["BTC-USD"].marks; }
+    },
     setSponsor: (ready) => { s.meta.sponsorReady = ready; },
     /** Who stands on the other side of the hedges on a venue without a market maker; null when it is the real book. */
     setLiquidity: (note) => { s.meta.strikeLiquidity = note; },

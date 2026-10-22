@@ -44,3 +44,8 @@ test("size snaps to Strike's step and the tick is honoured", () => {
   assert.equal(p.place[0].size, 0.01234);
   assert.deepEqual(p.place.map((o) => o.price), [79_920, 80_080]);
 });
+
+test("an ADA-USD plan sizes on a step of one and prices on a tick of 0.0001", () => {
+  const p = liquidityPlan({ mark: 0.21138571, positionBtc: 0, open: [], sizeBtc: 3784.3, step: 1, tick: 0.0001, maxPositionBtc: 20_000, now: T });
+  assert.deepEqual(p.place.map((o) => [o.side, o.size, o.price]), [["buy", 3784, 0.2111], ["sell", 3784, 0.2116]]);
+});

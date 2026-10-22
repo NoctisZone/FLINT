@@ -1,3 +1,6 @@
+// the citizens take on every market the makers quote
+const ALL_PAIRS = ["tBTC/tUSD", "tADA/tUSD", "tSOL/tUSD"];
+
 /** The five agents' mandates, for one owner and one expiry; sizes in USD, spreads in basis points per side (a hedge costs about 8). */
 export function profiles({ owner, expiry, subAccounts = {} }) {
   const base = (agentId, strike, midnight, risk) => ({
@@ -10,8 +13,8 @@ export function profiles({ owner, expiry, subAccounts = {} }) {
   return {
     "mm-rule": base("mm-rule", { maxPositionUsd: 300, priceBandPct: 2 }, { maxQuoteUsd: 150, minSpreadBps: 25, maxSpreadBps: 100, maxOpenQuotes: 4 }, { maxNetDeltaUsd: 150 }),
     "mm-claude": base("mm-claude", { maxPositionUsd: 300, priceBandPct: 2 }, { maxQuoteUsd: 150, minSpreadBps: 25, maxSpreadBps: 150, maxOpenQuotes: 4 }, { maxNetDeltaUsd: 150 }),
-    "citizen-a": base("citizen-a", { maxPositionUsd: 0, priceBandPct: 0, markets: [] }, { maxQuoteUsd: 150, minSpreadBps: 0, maxSpreadBps: 10_000, maxOpenQuotes: 0 }, { maxNetDeltaUsd: 1000 }),
-    "citizen-b": base("citizen-b", { maxPositionUsd: 0, priceBandPct: 0, markets: [] }, { maxQuoteUsd: 150, minSpreadBps: 0, maxSpreadBps: 10_000, maxOpenQuotes: 0 }, { maxNetDeltaUsd: 1000 }),
+    "citizen-a": base("citizen-a", { maxPositionUsd: 0, priceBandPct: 0, markets: [] }, { pairs: ALL_PAIRS, maxQuoteUsd: 150, minSpreadBps: 0, maxSpreadBps: 10_000, maxOpenQuotes: 0 }, { maxNetDeltaUsd: 1000 }),
+    "citizen-b": base("citizen-b", { maxPositionUsd: 0, priceBandPct: 0, markets: [] }, { pairs: ALL_PAIRS, maxQuoteUsd: 150, minSpreadBps: 0, maxSpreadBps: 10_000, maxOpenQuotes: 0 }, { maxNetDeltaUsd: 1000 }),
     rogue: base("rogue", { maxPositionUsd: 150, priceBandPct: 2 }, { maxQuoteUsd: 50, minSpreadBps: 25, maxSpreadBps: 100, maxOpenQuotes: 2 }, { maxNetDeltaUsd: 50 }),
   };
 }

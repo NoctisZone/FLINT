@@ -26,6 +26,8 @@ export function decisionLog(file, { now = () => new Date().toISOString() } = {})
   return {
     /** Writes the entry and returns it with seq, ts, prev and hash. */
     append(entry) {
+      // an entry's own `hash` would be overwritten by the chain's and the line could never verify again
+      if ("hash" in entry) throw new Error(`log entry ${entry.kind ?? "?"} carries a hash field; name it mandateHash or payloadHash`);
       const body = { ...entry, seq: seq + 1, ts: now(), prev };
       const full = { ...body, hash: hashOf(body) };
       fs.appendFileSync(file, JSON.stringify(full) + "\n");
@@ -37,15 +39,23 @@ export function decisionLog(file, { now = () => new Date().toISOString() } = {})
   };
 }
 
-/** { ok, entries, brokenAt } for a log file. */
-export function verifyLog(file) {
+/**
+ * { ok, entries, brokenAt } for a log file. With `fromSeq` the chain is
+ * checked from that entry on, anchored on its own `prev`: what one run
+ * wrote stays verifiable when an older part of the file is broken.
+ */
+export function verifyLog(file, { fromSeq = 1 } = {}) {
   let prev = GENESIS;
-  let n = 0;
+  let expect = fromSeq;
+  let checked = 0;
   for (const line of fs.readFileSync(file, "utf8").split("\n").filter(Boolean)) {
     const { hash, ...body } = JSON.parse(line);
-    n += 1;
-    if (body.prev !== prev || hashOf(body) !== hash || body.seq !== n) return { ok: false, entries: n, brokenAt: n };
+    if (body.seq < fromSeq) continue;
+    if (body.seq === fromSeq && fromSeq > 1 && checked === 0) prev = body.prev;
+    checked += 1;
+    if (body.prev !== prev || hashOf(body) !== hash || body.seq !== expect) return { ok: false, entries: checked, brokenAt: body.seq };
     prev = hash;
+    expect += 1;
   }
-  return { ok: true, entries: n, brokenAt: null };
+  return { ok: true, entries: checked, brokenAt: null };
 }

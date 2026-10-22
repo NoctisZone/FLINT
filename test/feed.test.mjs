@@ -65,3 +65,14 @@ test("with a static folder the server hands out the page at / and its files, nev
   server.close();
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test("setMarks keeps every market's mark and history; BTC-USD also fills strikeMark and marks for older readers", () => {
+  const s = feedState({ runStart: "2026-10-22T10:00:00Z" });
+  s.setMarks({ "BTC-USD": { mark: 84_000, funding: 0.00001 }, "ADA-USD": { mark: 0.41, funding: null }, "SOL-USD": { mark: 0 } });
+  s.setMarks({ "BTC-USD": { mark: 84_010 }, "ADA-USD": { mark: 0.42 } });
+  const m = s.get("meta");
+  assert.equal(m.strikeMark, 84_010);
+  assert.deepEqual(m.marks.map((x) => x.p), [84_000, 84_010]);
+  assert.deepEqual(Object.keys(m.markets), ["BTC-USD", "ADA-USD"], "a market without a mark is not listed");
+  assert.deepEqual([m.markets["ADA-USD"].mark, m.markets["ADA-USD"].marks.map((x) => x.p), m.markets["BTC-USD"].funding], [0.42, [0.41, 0.42], null]);
+});

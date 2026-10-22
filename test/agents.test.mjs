@@ -42,6 +42,22 @@ test("standing quotes stay while the mark is near; past the spread they are reti
   assert.match(frozenShort.reason, /frozen: only the bid/);
 });
 
+test("unwinding: only the side that sells the inventory down, never more than there is, inside the delta limit; nothing left means nothing stands", () => {
+  // hedged: 0.00147 tBTC against a 0.00147 short, net delta 0; frozen would quote nothing, the unwind asks the inventory
+  const v = view({ openQuotes: [{ quoteId: "b", side: "bid", price: 79_800, sizeBtc: 0.001, expiresAt: "2026-10-22T12:10:00Z" }], netDeltaBtc: 0, strikePositionBtc: -0.00147, inventoryBtc: 0.00147 });
+  const d = makerDecision(v, { unwind: true, minQuoteUsd: 100 });
+  assert.deepEqual([d.retire, d.quotes.map((q) => [q.side, q.sizeBtc, q.price])], [["b"], [["ask", 0.00147, 80_200]]], "the bid goes, the ask sells exactly the inventory");
+  assert.match(d.reason, /unwinding: only the ask that sells the inventory down/);
+  const big = makerDecision(view({ netDeltaBtc: 0, strikePositionBtc: -0.01, inventoryBtc: 0.01 }), { unwind: true });
+  assert.deepEqual(big.quotes.map((q) => [q.side, q.sizeBtc]), [["ask", 0.00187]], "the delta limit and the cap still size it");
+  const tail = makerDecision(view({ netDeltaBtc: 0, strikePositionBtc: -0.0005, inventoryBtc: 0.0005 }), { unwind: true, minQuoteUsd: 100 });
+  assert.deepEqual(tail.quotes, [], "a tail under the hedge minimum cannot be quoted");
+  const none = makerDecision(view({ openQuotes: [{ quoteId: "a", side: "ask", price: 80_200, sizeBtc: 0.001, expiresAt: "2026-10-22T12:10:00Z" }], netDeltaBtc: 0, inventoryBtc: 0 }), { unwind: true });
+  assert.deepEqual([none.retire, none.quotes, none.reason], [["a"], [], "unwinding: no inventory left to sell"]);
+  const short = makerDecision(view({ netDeltaBtc: 0, strikePositionBtc: 0.001, inventoryBtc: -0.001 }), { unwind: true });
+  assert.deepEqual(short.quotes.map((q) => [q.side, q.sizeBtc]), [["bid", 0.001]], "inventory sold short is bought back");
+});
+
 test("the spread is clamped into the mandate's band and the ttl into its limit", () => {
   const d = makerDecision(view(), { spreadBps: 400, ttlSec: 999 });
   assert.equal(d.quotes[0].price, 80_800, "100 bps max spread per side");

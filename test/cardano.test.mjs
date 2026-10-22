@@ -79,13 +79,19 @@ test("a transfer picks the largest UTxOs, pays a fixed fee, sends the change bac
   const to = cardanoWallet("66".repeat(32)).address;
   const utxos = [{ tx_hash: "aa".repeat(32), tx_index: 0, value: "3000000" }, { tx_hash: "bb".repeat(32), tx_index: 1, value: "9000000" }];
   const t = buildTransfer({ wallet: w, utxos, to, lovelace: 8_000_000n });
-  assert.equal(t.inputs, 1, "the 9 ADA output alone covers 8 ADA plus the fee");
-  assert.equal(t.change, 800_000n);
+  assert.equal(t.inputs, 2, "the 9 ADA output alone leaves 0.8 ADA of change, under the smallest output: the 3 ADA one joins");
+  assert.equal(t.change, 3_800_000n);
   const body = cborDecode(Buffer.from(t.cborHex, "hex")).items[0].value;
-  assert.equal(body.get(0n).length, 1);
+  assert.equal(body.get(0n).length, 2);
   assert.equal(hex(body.get(0n)[0][0]), "bb".repeat(32));
-  assert.deepEqual(body.get(1n).map((o) => [hex(o[0]), o[1]]), [[hex(addressBytesOf(to)), 8_000_000n], [hex(w.addressBytes), 800_000n]]);
+  assert.deepEqual(body.get(1n).map((o) => [hex(o[0]), o[1]]), [[hex(addressBytesOf(to)), 8_000_000n], [hex(w.addressBytes), 3_800_000n]]);
   assert.equal(body.get(2n), 200_000n);
+  // only the 9 ADA output: the 0.8 ADA of change cannot stand alone and goes into the fee
+  const t1 = buildTransfer({ wallet: w, utxos: [utxos[1]], to, lovelace: 8_000_000n });
+  const body1 = cborDecode(Buffer.from(t1.cborHex, "hex")).items[0].value;
+  assert.deepEqual([t1.inputs, t1.change, body1.get(1n).length, body1.get(2n)], [1, 0n, 1, 1_000_000n]);
+  const t2 = buildTransfer({ wallet: w, utxos, to, lovelace: 7_000_000n });
+  assert.deepEqual([t2.inputs, t2.change], [1, 1_800_000n], "change at or over the smallest output stands by itself");
   assert.throws(() => buildTransfer({ wallet: w, utxos, to, lovelace: 12_000_000n }), /not enough ADA/);
   const u = utxoHex(utxos[0], w.addressBytes);
   assert.deepEqual(cborDecode(Buffer.from(u, "hex")).value[0][1], 0n);

@@ -246,8 +246,10 @@ test("the owner's payments and payouts: fee and deposit built and submitted thro
   assert.deepEqual((await o.api.withdraw(S, "mm-rule", { usd: "all" })).body.job.usd, "all");
   assert.equal((await o.api.withdraw(S, "mm-rule", { usd: -1 })).status, 400);
   assert.equal((await o.api.withdraw(S, "mm-claude", { usd: 5 })).status, 404, "another owner's agent");
-  assert.equal(o.api.withdrawalsOf(S, "mm-rule").body.withdrawals.length, 2);
-  assert.equal(o.api.withdrawalsOf(S, "zed-9").status, 404, "a payout needs an agent in the loop");
+  assert.equal((await o.api.withdrawalsOf(S, "mm-rule")).body.withdrawals.length, 2);
+  assert.equal((await o.api.withdrawalsOf(S, "zed-9")).status, 404, "a payout needs an agent in the loop");
+  assert.equal((await o.api.withdrawalsOf(S, "mm-rule")).body.room, null, "no room reader wired: null");
+  assert.equal(o.api.retryWithdrawal(S, "mm-rule").status, 501, "no retry wired");
   // over http
   const server = http.createServer((req, res) => { o.handle(req, res).then((h) => { if (!h) { res.writeHead(404); res.end(); } }); });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
@@ -261,5 +263,80 @@ test("the owner's payments and payouts: fee and deposit built and submitted thro
     assert.equal((await call("agents/zed-9/pay", "POST", { signedTxCbor: "84a1" })).body.txHash, "cd".repeat(32));
     assert.equal((await call("agents/mm-rule/withdraw", "POST", { usd: 10 })).status, 201);
     assert.equal((await call("agents/mm-rule/withdrawals", "GET")).body.withdrawals.length, 3);
+  } finally { server.close(); }
+});
+
+test("payout retry and room, further deposits, unwind and a rotated Strike key: for the owner's agents only, over the API and over http", async () => {
+  const { agents, calls } = world();
+  const retried = [];
+  const withdrawals = {
+    start: async () => ({}), list: () => [{ status: "failed", usd: 55 }],
+    retry: (id) => { retried.push(id); if (id === "mm-rule" && retried.length > 1) throw Object.assign(new Error("job is running, nothing to retry"), { status: 409 }); return { status: "running", usd: 55 }; },
+    room: async (id) => (id === "mm-rule" ? { availableUsd: 150.25, limitUsd: 20.82, nowUsd: 20.82, hour: { limitAda: 100, usedAda: 0, remainingAda: 100 } } : null),
+  };
+  const started = [];
+  const seen = [];
+  const deposits = {
+    start: async (id, lovelace) => { started.push([id, lovelace]); return { kind: "deposit", agentId: id, status: "running", toAgentLovelace: String(lovelace + 5_000_000n) }; },
+    build: async (id, b) => { seen.push(["build", id, b]); return { unsignedTxCbor: "84a0", total: "105000000", outputs: [] }; },
+    submit: async (id, b) => { seen.push(["submit", id, b]); return { txHash: "cd".repeat(32) }; },
+    list: (id) => started.filter((x) => x[0] === id).map(([agentId, lovelace]) => ({ agentId, lovelace: String(lovelace), status: "done" })),
+    retry: (id) => ({ agentId: id, status: "running" }),
+  };
+  const rotated = [];
+  const strikeKeys = { info: (id) => (id === "mm-rule" ? { accountId: "acc-1", publicKey: "ab".repeat(32), connectedAt: "2026-10-22T10:00:00Z" } : null), rotate: async (id) => { rotated.push(id); return { accountId: "acc-1", publicKey: "cd".repeat(32), connectedAt: "2026-10-22T12:00:00Z", sameAccount: true }; } };
+  const unwound = [];
+  const gateway = { stateOf: () => ({ frozen: false }), stop: async () => ({}), unwind: async (id, reason) => { unwound.push([id, reason]); agents.find((a) => a.agentId === id).unwinding = true; return { inventoryBtc: 0.00147, strikePositionBtc: -0.00147, inventoryUsd: 117.6 }; } };
+  const o = ownerApi({ agents, gateway, withdrawals, deposits, strikeKeys, pricing: { ...PRICING, minTopUpAda: 50 }, now: () => T0 });
+  const S = { address: owner.address };
+  // payouts: the room beside the list, the retry
+  const w = await o.api.withdrawalsOf(S, "mm-rule");
+  assert.deepEqual([w.body.withdrawals.length, w.body.room.nowUsd, w.body.room.hour.limitAda], [1, 20.82, 100]);
+  assert.deepEqual(o.api.retryWithdrawal(S, "mm-rule"), { status: 200, body: { job: { status: "running", usd: 55 } } });
+  assert.equal(o.api.retryWithdrawal(S, "mm-rule").status, 409, "the job's own refusal passes through");
+  assert.equal(o.api.retryWithdrawal(S, "mm-claude").status, 404, "another owner's agent");
+  assert.deepEqual(retried, ["mm-rule", "mm-rule"]);
+  // deposits: at least the minimum, the owner's agent, then built and paid as an order
+  assert.equal((await o.api.deposit(S, "mm-rule", { ada: 10 })).body.error, "ada: at least 50 tADA");
+  assert.equal((await o.api.deposit(S, "mm-rule", { ada: "lots" })).status, 400);
+  assert.equal((await o.api.deposit(S, "mm-claude", { ada: 100 })).status, 404);
+  const d = await o.api.deposit(S, "mm-rule", { ada: 100 });
+  assert.deepEqual([d.status, d.body.job.kind, d.body.job.toAgentLovelace, started], [201, "deposit", "105000000", [["mm-rule", 100_000_000n]]]);
+  assert.equal((await o.api.depositPayment(S, "mm-rule", "deposit/build", { utxos: ["82"] })).body.total, "105000000");
+  assert.equal((await o.api.depositPayment(S, "mm-rule", "deposit/pay", { signedTxCbor: "84a1" })).body.txHash, "cd".repeat(32));
+  assert.equal((await o.api.depositPayment(S, "mm-claude", "deposit/build", {})).status, 404);
+  assert.equal((await o.api.depositPayment(S, "mm-rule", "deposit/x", {})).status, 404);
+  assert.deepEqual(seen.map((x) => x[0]), ["build", "submit"]);
+  assert.equal(o.api.depositsOf(S, "mm-rule").body.deposits.length, 1);
+  assert.equal(o.api.retryDeposit(S, "mm-rule").body.job.status, "running");
+  // unwind and the Strike key
+  const u = await o.api.act(S, "mm-rule", "unwind", {});
+  assert.deepEqual([u.status, u.body.status, u.body.inventoryUsd, unwound], [200, "unwinding", 117.6, [["mm-rule", "unwound by the owner"]]]);
+  assert.equal((await o.api.act(S, "mm-claude", "unwind", {})).status, 404);
+  assert.deepEqual([o.api.agentsOf(S).body.agents[0].unwinding, o.api.agentsOf(S).body.agents[0].strikeKey.publicKey], [true, "ab".repeat(32)]);
+  const k = await o.api.rotateStrikeKey(S, "mm-rule");
+  assert.deepEqual([k.status, k.body.publicKey, k.body.sameAccount, rotated], [200, "cd".repeat(32), true, ["mm-rule"]]);
+  assert.equal((await o.api.rotateStrikeKey(S, "mm-claude")).status, 404);
+  const bare = ownerApi({ agents, gateway: { stateOf: () => ({}) }, now: () => T0 });
+  assert.deepEqual([(await bare.api.act(S, "mm-rule", "unwind", {})).status, (await bare.api.rotateStrikeKey(S, "mm-rule")).status, (await bare.api.deposit(S, "mm-rule", { ada: 100 })).status], [501, 501, 501], "not wired: not on offer");
+  assert.equal(calls.length, 0);
+  // over http
+  const server = http.createServer((req, res) => { o.handle(req, res).then((h) => { if (!h) { res.writeHead(404); res.end(); } }); });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const url = `http://127.0.0.1:${server.address().port}/owner/`;
+  try {
+    const c = await (await fetch(url + "challenge", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ address: owner.address }) })).json();
+    const sess = await (await fetch(url + "session", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ nonce: c.nonce, signature: sign(owner, c.message) }) })).json();
+    const call = async (path, method, body) => { const r = await fetch(url + path, { method, headers: { "content-type": "application/json", authorization: `Bearer ${sess.token}` }, body: body ? JSON.stringify(body) : undefined }); return { status: r.status, body: await r.json() }; };
+    assert.equal((await call("agents/mm-rule/withdrawals", "GET")).body.room.limitUsd, 20.82);
+    assert.equal((await call("agents/mm-rule/withdrawals/retry", "POST", {})).status, 409);
+    assert.equal((await call("agents/mm-rule/deposit", "POST", { ada: 60 })).status, 201);
+    assert.equal((await call("agents/mm-rule/deposit/build", "POST", {})).body.total, "105000000");
+    assert.equal((await call("agents/mm-rule/deposit/pay", "POST", { signedTxCbor: "84a1" })).body.txHash, "cd".repeat(32));
+    assert.equal((await call("agents/mm-rule/deposits", "GET")).body.deposits.length, 2);
+    assert.equal((await call("agents/mm-rule/deposits/retry", "POST", {})).body.job.status, "running");
+    assert.equal((await call("agents/mm-rule/unwind", "POST", {})).body.status, "unwinding");
+    assert.equal((await call("agents/mm-rule/strike-key/rotate", "POST", {})).body.publicKey, "cd".repeat(32));
+    assert.equal((await call("agents/mm-rule/strike-key/rotate", "GET")).status, 404);
   } finally { server.close(); }
 });

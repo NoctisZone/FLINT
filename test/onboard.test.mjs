@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { accountsFile, agentWallet, coinSizes, connectStrike, fundFromTreasury, onboardSteps, orderPayments, ORDER_STEPS, serverRetry, sponsoredRetry, treasuryWallet, waitForCredit } from "../gateway/onboard.mjs";
+import { accountsFile, agentWallet, coinSizes, connectStrike, fundFromTreasury, onboardSteps, orderPayments, ORDER_STEPS, serverRetry, sponsoredRetry, topUpSteps, TOPUP_STEPS, treasuryWallet, waitForCredit } from "../gateway/onboard.mjs";
 import { utxoHex } from "../gateway/cardano.mjs";
 import { onboardJob } from "../gateway/onboard-job.mjs";
 import { profiles } from "../agents/profiles.mjs";
@@ -221,4 +221,55 @@ test("a retry after a failed mint goes on with the coins still missing", async (
     assert.equal(r2.status, "done", r2.error);
     assert.equal(calls.mints.length, 6, "two more refusals, then the four coins");
   } finally { globalThis.fetch = origFetch; }
+});
+
+test("a further deposit: the job waits for the owner's transfer to the agent's wallet (no fee output), the agent's wallet deposits it at Strike, and the credit is what rose on the balance", async () => {
+  const agent = agentWallet(MASTER, "nova-7");
+  const owner = treasuryWallet(MASTER).address;
+  const calls = { builds: [], confirms: [], submits: [] };
+  let landed = false, asks = 0;
+  const chain = {
+    kind: "koios",
+    utxos: async (addr) => (addr === agent.address ? [{ tx_hash: "ad".repeat(32), tx_index: 0, value: "107000000" }] : [{ tx_hash: "ab".repeat(32), tx_index: 0, value: "900000000" }]),
+    submit: async (cbor) => { calls.submits.push(cbor); landed = true; return "cd".repeat(32); },
+    txInfo: async (h) => [{ tx_hash: h[0] }],
+    balance: async () => (landed ? 107_000_000n : 3_000_000n),
+  };
+  const strike = {
+    syncClock: async () => {}, balances: async () => [{ walletBalance: ++asks > 3 ? "120.5" : "100" }],
+    depositQuote: async () => ({ request_id: "req-2", quote: { usd_value: "21.2" } }),
+    depositBuildTx: async (b) => { calls.builds.push(b); return { format: "cardano_cbor", unsigned_tx: UNSIGNED, expires_at: "x" }; },
+    depositConfirm: async (b) => { calls.confirms.push(b); return { status: "pending" }; },
+  };
+  let t = 0;
+  const steps = topUpSteps({ agentId: "nova-7", wallet: agent, owner, lovelace: 100_000_000n, strike, chain, sleep: noSleep, now: () => (t += 20_000) });
+  const j = onboardJob({ agentId: "nova-7", index: null, owner, mind: null, kind: "deposit", order: TOPUP_STEPS, spec: { lovelace: "100000000" }, steps, now: () => 0, setTimer, clearTimer });
+  const payments = orderPayments({ jobOf: () => j, chain });
+  const run = j.run();
+  for (let i = 0; i < 20 && !j.waitingFor.includes("pay"); i++) await tick();
+  const v0 = j.view();
+  assert.deepEqual([v0.kind, v0.current, v0.feeLovelace, v0.depositLovelace, v0.toAgentLovelace, v0.cardano, v0.owner], ["deposit", "pay", "0", "100000000", "105000000", agent.address, owner]);
+  assert.match(v0.steps[0].detail, /waiting for your transfer of 105 tADA/);
+  const built = await payments.build("nova-7", {});
+  assert.deepEqual([built.outputs, built.total], [[{ to: agent.address, lovelace: "105000000" }], "105000000"], "one output, no fee");
+  const f = await payments.submit("nova-7", { signedTxCbor: signTransaction(built.unsignedTxCbor, treasuryWallet(MASTER)).cborHex });
+  assert.equal(f.txHash, "cd".repeat(32));
+  const r = await run;
+  assert.equal(r.status, "done", r.error);
+  const v = j.view();
+  assert.deepEqual([calls.builds[0].user_address, calls.confirms[0], v.depositTx, v.depositUsd, v.creditedUsd], [agent.address, { request_id: "req-2", tx_hash: "cd".repeat(32) }, "cd".repeat(32), "21.2", 20.5]);
+  assert.match(v.steps[2].detail, /^20\.50 USD credited on Strike, 120\.50 USD now$/);
+  // a retry after the credit timed out deposits nothing twice
+  asks = -1000;
+  const slow = topUpSteps({ agentId: "nova-7", wallet: agent, owner, lovelace: 100_000_000n, strike, chain, sleep: noSleep, now: () => (t += 200_000) });
+  const j2 = onboardJob({ agentId: "nova-7", index: null, owner, mind: null, kind: "deposit", order: TOPUP_STEPS, spec: {}, steps: slow, now: () => 0, setTimer, clearTimer });
+  const run2 = j2.run();
+  for (let i = 0; i < 20 && !j2.waitingFor.includes("pay"); i++) await tick();
+  j2.deliver("pay", { txHash: "cd".repeat(32) });
+  const r2 = await run2;
+  assert.deepEqual([r2.status, j2.view().current, calls.builds.length], ["failed", "credit", 2]);
+  assert.match(r2.error, /not credited by Strike yet/);
+  asks = 10;
+  assert.equal((await j2.retry()).status, "done");
+  assert.equal(calls.builds.length, 2, "the retry waits for the credit, it does not deposit again");
 });

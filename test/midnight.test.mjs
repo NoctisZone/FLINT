@@ -35,7 +35,7 @@ test("an ask gives tBTC in satoshi and wants tUSD in cents; a bid the other way 
   const a = await v.quote({ side: "ask", sizeBtc: 0.0007, price: 84_200, ttlSec: 300 });
   assert.deepEqual(calls[0], ["make", { type: T.tBTC, value: 70000n }, { type: T.tUSD, value: 5894n }]);
   assert.deepEqual(calls[1], ["post", "half-1", ["flint", "mm-rule", "ask"], "2026-10-22T12:05:00.000Z"]);
-  assert.deepEqual(a, { quoteId: "q1", side: "ask", sizeBtc: 0.0007, price: 84_200, expiresAt: "2026-10-22T12:05:00.000Z" });
+  assert.deepEqual(a, { quoteId: "q1", pair: "tBTC/tUSD", side: "ask", sizeBtc: 0.0007, price: 84_200, expiresAt: "2026-10-22T12:05:00.000Z" });
   const b = await v.quote({ side: "bid", sizeBtc: 0.0007, price: 83_600, ttlSec: 120 });
   assert.deepEqual(calls[2], ["make", { type: T.tUSD, value: 5852n }, { type: T.tBTC, value: 70000n }]);
   assert.equal(b.side, "bid");
@@ -78,7 +78,7 @@ test("a citizen takes a quote: expect mirrors the row, the sponsor's answer says
   const log = [];
   const v = midnightVenue({ trader, agentId: "citizen-a", types: T, now: () => T0, log: (e) => log.push(e) });
   const [ask] = await v.board();
-  assert.deepEqual(ask, { quoteId: "o1", side: "ask", sizeBtc: 0.0007, price: 84_200, expiresAt: "2026-10-22T12:05:00Z", maker: "mm-rule", offer: "x" });
+  assert.deepEqual(ask, { quoteId: "o1", pair: "tBTC/tUSD", side: "ask", sizeBtc: 0.0007, price: 84_200, expiresAt: "2026-10-22T12:05:00Z", maker: "mm-rule", offer: "x" });
   const r = await v.take(ask);
   assert.deepEqual(calls[0], ["take", "x", "o1", { gives: { [T.tBTC]: "70000" }, wants: { [T.tUSD]: "5894" } }]);
   assert.deepEqual(calls[1], ["sponsor", "o1", "t1"]);
@@ -93,5 +93,5 @@ test("a citizen takes a quote: expect mirrors the row, the sponsor's answer says
 
 test("holdings in BTC and USD, with coins and what one half can give", async () => {
   const v = midnightVenue({ trader: stand().trader, agentId: "x", types: T });
-  assert.deepEqual(await v.holdings(), { btc: 0.007, usd: 470, coins: { tBTC: 10, tUSD: 10 }, spendable: { btc: 0.0028, usd: 188 }, maxInputs: 4 });
+  assert.deepEqual(await v.holdings(), { btc: 0.007, usd: 470, coins: { tBTC: 10, tUSD: 10 }, spendable: { btc: 0.0028, usd: 188 }, maxInputs: 4, bases: { "tBTC/tUSD": { btc: 0.007, coins: 10, spendable: 0.0028 } } });
 });

@@ -82,7 +82,9 @@ main.wrap,.strip{position:relative;z-index:1}
 .seg{position:relative;display:inline-flex;padding:3px;border-radius:var(--r-ctl);background:var(--well);border:1px solid var(--line)}
 .seg .thumb{position:absolute;top:3px;bottom:3px;left:0;width:0;border-radius:var(--r-ctl);background:var(--surface);box-shadow:0 1px 2px rgba(0,0,0,.12),0 0 0 1px var(--line);transition:transform .45s var(--out),width .45s var(--out)}
 .seg.nav .thumb{background:var(--ink);box-shadow:none}
-.seg button{position:relative;z-index:1;appearance:none;border:0;background:none;color:var(--t3);font:500 12.5px/1 var(--sans);padding:0 14px;min-height:30px;border-radius:var(--r-ctl);cursor:pointer;transition:color .3s}
+.seg button{position:relative;z-index:1;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;appearance:none;border:0;background:none;color:var(--t3);font:500 12.5px/1 var(--sans);padding:0 14px;min-height:30px;border-radius:var(--r-ctl);cursor:pointer;transition:color .3s}
+.field .seg{justify-self:start}
+.seg.multi{gap:3px}.seg.multi button{gap:5px}.seg.multi button svg{width:12px;height:12px;opacity:0;transition:opacity .2s}.seg.multi button[aria-pressed="true"]{background:var(--surface);box-shadow:0 1px 2px rgba(0,0,0,.12),0 0 0 1px var(--line)}.seg.multi button[aria-pressed="true"] svg{opacity:1}
 .seg button:hover{color:var(--ink)}
 .seg button[aria-pressed="true"]{color:var(--ink)}
 .seg.nav button[aria-pressed="true"]{color:var(--on)}
@@ -252,6 +254,12 @@ button.mn:hover .orb .av{transform:scale(1.08)}
 .g2{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:20px;align-items:start}
 .g2.even{grid-template-columns:repeat(2,minmax(0,1fr))}
 .g3{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) minmax(0,1fr);gap:20px;align-items:start}
+.pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.pgrid .pblock{border:1px solid var(--line);border-top:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.g2.even{align-items:stretch}
+.g2.even>.card{display:flex;flex-direction:column}
+.g2.even>.card .cb{flex:1}
+.g2.even>.card .feed{height:400px;max-height:none}
 .chart{position:relative;height:clamp(200px,24vw,240px);border:1px solid var(--line);border-radius:var(--r);background:var(--surface-2);overflow:hidden}
 .chart canvas{position:absolute;inset:0;width:100%;height:100%}
 .clegend{display:flex;flex-wrap:wrap;gap:6px 14px;font:400 11px/1.3 var(--mono);color:var(--t4);margin-top:-4px}
@@ -664,6 +672,7 @@ details summary{cursor:pointer;font:500 12px/1.3 var(--mono);color:var(--t3)}
 .tm-col{display:grid;grid-template-rows:auto minmax(0,1fr);gap:20px;min-width:0}
 .chart.tall{height:clamp(240px,24vw,340px)}
 .ch .seg{margin-left:auto}
+.ch .seg.mkt{margin-left:0}
 .ch .seg button{min-height:26px;padding:0 12px;font-size:12px}
 .ch .seg+.q{margin-left:0}
 .clegend i.dm{width:7px;height:7px;border:0;background:var(--c);transform:rotate(45deg)}
@@ -790,13 +799,7 @@ details summary{cursor:pointer;font:500 12px/1.3 var(--mono);color:var(--t3)}
       <button type="button" id="nv-console" data-act="view" data-v="console" aria-pressed="false">Your agents</button>
     </div>
     <div class="ctrls">
-      <div class="seg" role="group" aria-label="How much detail">
-        <span class="thumb" aria-hidden="true"></span>
-        <button type="button" id="md-simple" data-act="mode" data-m="simple" aria-pressed="true">Simple</button>
-        <button type="button" id="md-pro" data-act="mode" data-m="pro" aria-pressed="false">Pro</button>
-      </div>
       <button type="button" class="iconbtn" id="th" data-act="theme" aria-label="Theme: match the system"></button>
-      <button type="button" class="btn" id="mo" data-act="motion" aria-pressed="true"><span id="mo-ic"></span><span id="mo-t">Motion on</span></button>
       <button type="button" class="btn primary" id="tour-btn" data-act="tour"><span id="tour-ic"></span>Tour</button>
     </div>
   </div>
@@ -839,9 +842,9 @@ details summary{cursor:pointer;font:500 12px/1.3 var(--mono);color:var(--t3)}
 
   <div class="g2">
     <section class="card" id="book" aria-labelledby="book-h">
-      <div class="ch"><span class="ic" style="--c:var(--cyan)" data-ic="book"></span><h2 id="book-h">The private book</h2><span class="note" id="book-note"></span><button type="button" class="q" data-act="help" data-help="book" aria-label="About the private book">?</button></div>
+      <div class="ch"><span class="ic" style="--c:var(--cyan)" data-ic="book"></span><h2 id="book-h">The private book</h2><span class="note" id="book-note"></span><div class="seg mkt" id="mkt-seg" role="group" aria-label="Market" hidden><span class="thumb" aria-hidden="true"></span><button type="button" data-act="market" data-m="BTC-USD" id="mk-BTC-USD" aria-pressed="true">BTC</button><button type="button" data-act="market" data-m="ADA-USD" id="mk-ADA-USD" aria-pressed="false">ADA</button><button type="button" data-act="market" data-m="SOL-USD" id="mk-SOL-USD" aria-pressed="false">SOL</button></div><button type="button" class="q" data-act="help" data-help="book" aria-label="About the private book">?</button></div>
       <div class="cb">
-        <div class="chart"><canvas id="chart" role="img" aria-label="Strike's Bitcoin price over the last two minutes, with the open offers and private trades marked"></canvas></div>
+        <div class="chart"><canvas id="chart" role="img" aria-label="Strike's price for the chosen market over the last two minutes, with the open offers and private trades marked"></canvas></div>
         <div class="clegend"><span style="--c:var(--orange)"><i class="ln"></i>Strike price, last 2 min</span><span style="--c:var(--red)"><i></i>offers to sell</span><span style="--c:var(--green)"><i></i>offers to buy</span><span style="--c:var(--cyan)"><i class="pt"></i>private trades</span></div>
         <div class="book">
           <div class="bhead bg"><span>Side</span><span>Price</span><span>Size</span><span>Vs Strike</span><span>Maker</span><span>Left</span></div>
@@ -874,20 +877,10 @@ details summary{cursor:pointer;font:500 12px/1.3 var(--mono);color:var(--t3)}
     </section>
   </div>
 
-  <div class="g3">
-    <section class="card" id="proof" aria-labelledby="proof-h">
-      <div class="ch"><span class="ic" style="--c:var(--green)" data-ic="proof"></span><h2 id="proof-h">Proofs on Midnight</h2><button type="button" class="q" data-act="help" data-help="proof" aria-label="About proofs on Midnight" style="margin-left:auto">?</button></div>
-      <div class="cb"><div class="next" id="proof-next"></div><div id="proof-body" style="display:grid;gap:12px"></div><div><button type="button" class="btn" data-act="help" data-help="verify" data-k="verify">How to check a proof</button></div></div>
-    </section>
-    <section class="card" id="trail" aria-labelledby="trail-h">
-      <div class="ch"><span class="ic" style="--c:var(--cyan)" data-ic="route"></span><h2 id="trail-h">Where the money comes from</h2><button type="button" class="q" data-act="help" data-help="trail" aria-label="About where the money comes from" style="margin-left:auto">?</button></div>
-      <div class="cb" id="trail-body"></div>
-    </section>
-    <section class="card" id="paid" aria-labelledby="paid-h">
-      <div class="ch"><span class="ic" style="--c:var(--yellow)" data-ic="coin"></span><h2 id="paid-h">Paid calls</h2><button type="button" class="q" data-act="help" data-help="paid" aria-label="About paid calls" style="margin-left:auto">?</button></div>
-      <div class="cb"><div class="paidrow"><span class="coin" id="coin" aria-hidden="true">₳</span><div><div class="bignum" id="paid-n">0</div><span class="t3 small" id="paid-s"></span></div></div><div id="paid-list"></div><div class="kv"><span>Goes to</span><span>the shared treasury</span></div></div>
-    </section>
-  </div>
+  <section class="card" id="proof" aria-labelledby="proof-h">
+    <div class="ch"><span class="ic" style="--c:var(--green)" data-ic="proof"></span><h2 id="proof-h">Proofs on Midnight</h2><span class="note">every maker's rules and results, provable by anyone</span><button type="button" class="q" data-act="help" data-help="proof" aria-label="About proofs on Midnight">?</button></div>
+    <div class="cb"><div class="next" id="proof-next"></div><div id="proof-body" class="pgrid"></div><div><button type="button" class="btn" data-act="help" data-help="verify" data-k="verify">How to check a proof</button></div></div>
+  </section>
 
   <section class="join" id="join" aria-labelledby="join-h">
     <div>
@@ -935,7 +928,7 @@ details summary{cursor:pointer;font:500 12px/1.3 var(--mono);color:var(--t3)}
       <div class="tm-col">
         <section class="card" id="tm-chart-card" aria-labelledby="tm-ch-h">
           <div class="ch"><span class="ic" style="--c:var(--orange)" data-ic="wave"></span><h2 id="tm-ch-h">Its trades on Strike’s price</h2><div class="seg" role="group" aria-label="Chart"><span class="thumb" aria-hidden="true"></span><button type="button" id="tc-price" data-act="tm-chart" data-c="price" aria-pressed="true">Price</button><button type="button" id="tc-earn" data-act="tm-chart" data-c="earn" aria-pressed="false">Earnings</button></div><button type="button" class="q" data-act="help" data-help="tm-chart" aria-label="About the chart">?</button></div>
-          <div class="cb"><div class="chart tall"><canvas id="tm-chart" role="img" aria-label="Strike's Bitcoin price over the last two minutes, with this agent's offers, trades and hedges marked"></canvas></div><div class="clegend" id="tm-legend"></div></div>
+          <div class="cb"><div class="chart tall"><canvas id="tm-chart" role="img" aria-label="Strike's price on this agent's market over the last two minutes, with its offers, trades and hedges marked"></canvas></div><div class="clegend" id="tm-legend"></div></div>
         </section>
         <section class="card" id="tm-act" aria-label="Activity">
           <div class="tm-tabs"><div class="tm-tabs-in" id="tm-tabs" role="tablist" aria-label="Activity"></div><button type="button" class="q" data-act="help" data-help="tm-act" aria-label="About the activity">?</button></div>
@@ -966,7 +959,7 @@ details summary{cursor:pointer;font:500 12px/1.3 var(--mono);color:var(--t3)}
 <div class="welcome" id="welcome" role="dialog" aria-labelledby="wl-t" hidden>
   <div class="pk">New here?</div>
   <h3 id="wl-t">Take the one-minute tour</h3>
-  <p>Eight short stops explain each part of the Arena. You can leave at any time.</p>
+  <p>Ten short stops explain what Flint does and how to read the Arena. You can leave at any time.</p>
   <div class="row"><button type="button" class="btn primary" data-act="tour">Start the tour</button><button type="button" class="btn" data-act="welcome-skip">Not now</button></div>
 </div>
 <div class="scrim" id="scrim" data-act="drawer-close" hidden></div>
@@ -1050,7 +1043,7 @@ let CAP=null; /* the live deposit behind the money trail */
 const LV={}; /* the live layer's owner calls: connect, disconnect, pause, stop, close, sign */
 const clock=t=>new Date(t).toTimeString().slice(0,8);
 const money=(v,dp=2)=>(v<-0.004?'−$':'$')+Math.abs(v).toLocaleString('en-US',{minimumFractionDigits:dp,maximumFractionDigits:dp});
-const usdPx=v=>'$'+v.toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1});
+const usdPx=v=>{const dp=v>=1000?1:v>=10?2:4;return '$'+v.toLocaleString('en-US',{minimumFractionDigits:dp,maximumFractionDigits:dp})};
 const pct=bps=>(bps/100).toFixed(2)+'%';
 const short=h=>h?h.slice(0,8)+'…'+h.slice(-4):'';
 const set=(id,t)=>{const e=document.getElementById(id);if(e&&e.textContent!==String(t))e.textContent=t};
@@ -1060,7 +1053,7 @@ function paint(el,html){if(!el)return;const a=document.activeElement;const key=a
 const KEY='noctis-agentic-view';
 const reduced=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 const P={motion:!reduced,mode:'simple',toured:false};
-try{const s=JSON.parse(localStorage.getItem(KEY)||'{}');if(typeof s.motion==='boolean')P.motion=s.motion;if(s.flintMode==='pro')P.mode='pro';if(s.flintToured)P.toured=true}catch(e){}
+try{const s=JSON.parse(localStorage.getItem(KEY)||'{}');if(typeof s.motion==='boolean')P.motion=s.motion;if(s.flintToured)P.toured=true}catch(e){}
 function save(){try{const s=JSON.parse(localStorage.getItem(KEY)||'{}');s.motion=P.motion;s.flintMode=P.mode;s.flintToured=P.toured;localStorage.setItem(KEY,JSON.stringify(s))}catch(e){}}
 const pro=()=>P.mode==='pro';
 /* ---------------------------------------------------------------- v2 faces in markup */
@@ -1083,7 +1076,10 @@ Object.keys(AG).forEach(id=>initAgent(id,AG[id]));
 const makers=()=>Object.keys(AG).filter(id=>AG[id].type==='mm');
 const nameOf=id=>AG[id]?AG[id].name:id;
 /* ---------------------------------------------------------------- run state, in the live feed's terms */
-const S={hist:[],mark:84213.4,markAt:now(),quotes:new Map(),trades:[],decisions:[],refusals:[],proofs:{},revenue:{calls:0,lovelace:0,last:null},sel:null,pinned:false,windowFrom:now(),nextProof:now()+45000,seq:0};
+/* the markets an agent can trade: Strike's symbol, the Midnight pair that mirrors it, the base token */
+const MKT={'BTC-USD':{pair:'tBTC/tUSD',base:'BTC',token:'tBTC',min:100},'ADA-USD':{pair:'tADA/tUSD',base:'ADA',token:'tADA',min:5},'SOL-USD':{pair:'tSOL/tUSD',base:'SOL',token:'tSOL',min:10}};
+const PAIR_SYM={};for(const k in MKT)PAIR_SYM[MKT[k].pair]=k;
+const S={market:'BTC-USD',mk:{},hist:[],mark:84213.4,markAt:now(),quotes:new Map(),trades:[],decisions:[],refusals:[],proofs:{},revenue:{calls:0,lovelace:0,last:null},sel:null,pinned:false,windowFrom:now(),nextProof:now()+45000,seq:0};
 function decision(agentId,action,side,sizeBtc,px,reason,at,ext){S.decisions.unshift({id:'d'+(++UID),ts:iso(at||now()),at:at||now(),agentId:agentId,action:action,side:side,sizeBtc:sizeBtc,price:px,reason:reason,ext:!!ext});if(S.decisions.length>70)S.decisions.length=70}
 function claudeSays(full,size){return pick([
   'Fills are landing and hedges are quick, so I quote '+full+' bps around the mark, $'+size+' a side.',
@@ -1241,7 +1237,7 @@ function seed(){
   S.decisions.sort((x,y)=>y.at-x.at);
   makers().forEach(postQuotes);outsideQuote();
 }
-const STAT={quoting:['Quoting','var(--green)','Offering to buy and to sell.'],hedging:['Hedging','var(--yellow)','A hedge is on its way to Strike.'],watching:['Watching','var(--cyan)','Looking for a good offer.'],frozen:['Frozen','var(--red)','Stopped: a hedge was late.'],starting:['Starting','var(--t4)','Opening its wallets.'],blocked:['Blocked','var(--red)','Its attempts are being refused.']};
+const STAT={quoting:['Quoting','var(--green)','Offering to buy and to sell.'],hedging:['Hedging','var(--yellow)','A hedge is on its way to Strike.'],watching:['Watching','var(--cyan)','Looking for a good offer.'],frozen:['Frozen','var(--red)','Stopped: a hedge was late.'],starting:['Starting','var(--t4)','Opening its wallets.'],blocked:['Blocked','var(--red)','Its attempts are being refused.'],unwinding:['Unwinding','var(--orange)','Selling its inventory down and closing its hedge; then it is stopped.']};
 function statusChip(id){const a=AG[id];const s=a.type==='rogue'?'blocked':a.rt.status;const v=STAT[s]||STAT.quoting;return '<span class="chip dot" style="--c:'+v[1]+'" title="'+v[2]+'">'+v[0]+'</span>'}
 const BADGES=[['no-violations','No rules broken'],['delta-held','Risk kept in limits'],['hedged-in-time','Hedged in time'],['allowed-venues','Only allowed markets']];
 const earned=(id,k)=>{const b=S.proofs[id]&&S.proofs[id].badges;if(b)return b.indexOf(k)>=0;const a=AG[id];if(a.type!=='mm'||a.rt.fills===0)return false;return k!=='hedged-in-time'||a.rt.maxLat<=a.mandate.hedgeWithinSec*1000};
@@ -1397,7 +1393,7 @@ function renderRecent(){
 
 /* the private book */
 function renderBook(){
-  const qs=[...S.quotes.values()],maxUsd=Math.max(1,...qs.map(q=>q.sizeBtc*q.price));
+  const qs=[...S.quotes.values()].filter(q=>(q.pair||'tBTC/tUSD')===MKT[S.market].pair),maxUsd=Math.max(1,...qs.map(q=>q.sizeBtc*q.price));
   const asks=qs.filter(q=>q.side==='ask').sort((a,b)=>b.price-a.price),bids=qs.filter(q=>q.side==='bid').sort((a,b)=>b.price-a.price);
   const row=q=>{
     if(q.empty)return '<div class="bempty">'+q.empty+'</div>';
@@ -1408,9 +1404,15 @@ function renderBook(){
   keyed($('#asks'),asks.length?asks:[{empty:'No offers to sell right now.',k:'ea'}],q=>q.k||q.quoteId,row);
   keyed($('#bids'),bids.length?bids:[{empty:'No offers to buy right now.',k:'eb'}],q=>q.k||q.quoteId,row);
   set('book-note',qs.length+' open offer'+(qs.length===1?'':'s'));
-  set('ml-note',pro()?'BTC-USD mark · polled every 2 s':'every offer is priced from this');
+  set('ml-note',pro()?S.market+' mark · polled every 2 s':S.market+' on Strike · every offer is priced from this');
   renderMark();ttlAt=0;
 }
+/* the mark of a pair's market, this agent's market, and its price history */
+const markFor=pair=>(S.mk[PAIR_SYM[pair]]||{}).mark||S.mark;
+const mktOf=id=>(AG[id]&&AG[id].market)||'BTC-USD';
+const markOfA=id=>(S.mk[mktOf(id)]||{}).mark||S.mark;
+const histOfA=id=>(S.mk[mktOf(id)]||{}).hist||S.hist;
+function setMarket(sym){if(!MKT[sym]||sym===S.market)return;S.market=sym;const k=S.mk[sym];if(k){S.mark=k.mark||S.mark;S.hist=k.hist;S.markAt=now()}CH.shown=null;CH.lo=CH.hi=null;for(const m in MKT){const b=$('#mk-'+m);if(b)b.setAttribute('aria-pressed',String(m===sym))}thumbs();LAST.mark=undefined;renderBook()}
 function renderMark(){
   const b=$('#ml-px'),v=usdPx(S.mark);if(b.textContent===v)return;const prev=LAST.mark;LAST.mark=S.mark;b.textContent=v;
   if(prev===undefined)return;const up=S.mark>=prev,ar=$('#ml-arr');ar.style.transform='rotate('+(up?0:180)+'deg)';ar.style.color=up?'var(--green)':'var(--red)';
@@ -1434,13 +1436,13 @@ function drawChart(ts,dt){
   const X=t=>padL+(w-padL-padR)*(1-(T-t)/span);
   const pts=S.hist.filter(p=>p.t>=T-span-4000).map(p=>[X(p.t),p.p]);pts.push([X(T),CH.shown]);
   let lo=Infinity,hi=-Infinity;pts.forEach(p=>{if(p[1]<lo)lo=p[1];if(p[1]>hi)hi=p[1]});
-  const qs=[...S.quotes.values()];qs.forEach(q=>{if(q.price<lo)lo=q.price;if(q.price>hi)hi=q.price});
-  const pad=(hi-lo)*.1+4;lo-=pad;hi+=pad;const kr=P.motion?1-Math.exp(-dt/500):1;
+  const qs=[...S.quotes.values()].filter(q=>(q.pair||'tBTC/tUSD')===MKT[S.market].pair);qs.forEach(q=>{if(q.price<lo)lo=q.price;if(q.price>hi)hi=q.price});
+  const pad=(hi-lo)*.1+(hi+lo)*2.5e-5;lo-=pad;hi+=pad;const kr=P.motion?1-Math.exp(-dt/500):1;
   CH.lo=CH.lo==null?lo:CH.lo+(lo-CH.lo)*kr;CH.hi=CH.hi==null?hi:CH.hi+(hi-CH.hi)*kr;
   const Y=v=>padT+(h-padT-padB)*(1-(v-CH.lo)/(CH.hi-CH.lo));
   x.font='500 10px "JetBrains Mono",ui-monospace,monospace';x.textBaseline='bottom';x.textAlign='left';
   const step=niceStep((CH.hi-CH.lo)/3);
-  for(let v=Math.ceil(CH.lo/step)*step;v<CH.hi;v+=step){const yy=Math.round(Y(v))+.5;x.strokeStyle='rgba(255,255,255,.05)';x.lineWidth=1;x.beginPath();x.moveTo(padL,yy);x.lineTo(w-padR+4,yy);x.stroke();x.fillStyle='rgba(141,153,170,.7)';x.fillText(v.toLocaleString('en-US'),padL+2,yy-3)}
+  for(let v=Math.ceil(CH.lo/step)*step;v<CH.hi;v+=step){const yy=Math.round(Y(v))+.5;x.strokeStyle='rgba(255,255,255,.05)';x.lineWidth=1;x.beginPath();x.moveTo(padL,yy);x.lineTo(w-padR+4,yy);x.stroke();x.fillStyle='rgba(141,153,170,.7)';x.fillText(v.toLocaleString('en-US',{maximumFractionDigits:Math.max(0,Math.ceil(-Math.log10(step)-1e-9))}),padL+2,yy-3)}
   x.setLineDash([4,5]);
   qs.forEach(q=>{const yy=Math.round(Y(q.price))+.5,c=q.side==='ask'?'255,92,122':'0,255,163';x.strokeStyle='rgba('+c+','+(q.outside?.3:.6)+')';x.lineWidth=1.2;x.beginPath();x.moveTo(padL,yy);x.lineTo(w-padR+4,yy);x.stroke()});
   x.setLineDash([]);
@@ -1452,7 +1454,7 @@ function drawChart(ts,dt){
   const ag=x.createLinearGradient(0,padT,0,h);ag.addColorStop(0,'rgba(255,122,26,.26)');ag.addColorStop(1,'rgba(255,122,26,0)');x.fillStyle=ag;x.fill(area);
   const lg=x.createLinearGradient(padL,0,L[0],0);lg.addColorStop(0,'rgba(255,122,26,.15)');lg.addColorStop(.35,'rgba(255,122,26,.8)');lg.addColorStop(1,'#FF9A4A');
   x.strokeStyle=lg;x.lineWidth=2;x.lineJoin='round';x.shadowColor='rgba(255,122,26,.55)';x.shadowBlur=8;x.stroke(line);x.shadowBlur=0;
-  S.trades.forEach(t=>{if(T-t.takenAt>span)return;const px=X(t.takenAt),py=Y(t.price);x.fillStyle='rgba(0,229,255,.18)';x.beginPath();x.arc(px,py,7.5,0,7);x.fill();x.fillStyle='#00E5FF';x.beginPath();x.arc(px,py,3.5,0,7);x.fill();x.strokeStyle='#E8FDFF';x.lineWidth=1.2;x.stroke()});
+  S.trades.forEach(t=>{if(T-t.takenAt>span||(t.pair||'tBTC/tUSD')!==MKT[S.market].pair)return;const px=X(t.takenAt),py=Y(t.price);x.fillStyle='rgba(0,229,255,.18)';x.beginPath();x.arc(px,py,7.5,0,7);x.fill();x.fillStyle='#00E5FF';x.beginPath();x.arc(px,py,3.5,0,7);x.fill();x.strokeStyle='#E8FDFF';x.lineWidth=1.2;x.stroke()});
   const ex=L[0],ey=Y(L[1]);
   if(P.motion){const ph=(ts%1600)/1600;x.strokeStyle='rgba(255,122,26,'+((1-ph)*.7).toFixed(3)+')';x.lineWidth=1.5;x.beginPath();x.arc(ex,ey,4+ph*13,0,7);x.stroke()}
   x.fillStyle='#FF7A1A';x.beginPath();x.arc(ex,ey,4.2,0,7);x.fill();x.fillStyle='#fff';x.beginPath();x.arc(ex,ey,1.7,0,7);x.fill();
@@ -1555,17 +1557,19 @@ function renderProof(){
 }
 /* where the money comes from */
 function renderTrail(){
+  if(!$('#trail-body'))return;
   setH($('#trail-body'),'<p class="g-say" style="margin:0">'+(CAP&&CAP.none?'No deposit in this run’s trail: the makers trade from Strike accounts funded before it started.':CAP?(pro()?'deposit '+short(String(CAP.requestId||''))+' · '+Number(CAP.lovelace||0).toLocaleString('en-US')+' lovelace · '+money(CAP.usd||0)+' at $'+Number(CAP.usdPerAda||0).toFixed(6)+' · '+esc(CAP.status||''):(Number(CAP.lovelace||0)/1e6).toLocaleString('en-US')+' test ADA went in, worth '+money(CAP.usd||0)+'. This is the money the makers hedge with.'):(pro()?'deposit 9c4d5f0b · 10,000,000,000 lovelace · $2,273.06 at $0.227306 · settled':'10,000 test ADA went in, worth $2,273.06. This is the money MM Rule hedges with.'))+'</p><ol class="hops">'+(CAP&&CAP.none?[]:HOPS).map(h=>'<li class="hop done"><span class="dot">'+IC.checkThin+'</span><div><b>'+(pro()?h[1]:h[0])+'</b><a href="https://preprod.cexplorer.io/tx/'+h[2]+'" target="_blank" rel="noopener">'+short(h[2])+' · '+h[3]+' ↗</a></div></li>').join('')+'</ol>'+(pro()?'<div class="kv"><span>fees · funding</span><span class="mono">'+(CAP?money(CAP.feesUsd||0)+' · '+money(CAP.fundingUsd||0,4):'−$0.13 · +$0.0019')+'</span></div>':''));
 }
 /* paid calls */
 function renderPaid(){
+  if(!$('#paid-n'))return;
   const R=S.revenue;
   if(changed('calls',R.calls)&&anim()){const c=$('#coin');c.classList.remove('drop');void c.offsetWidth;c.classList.add('drop')}
   tween('paid-n',R.calls,int);
   set('paid-s',pro()?R.calls+' paid calls · '+(R.lovelace/1e6).toFixed(0)+' tADA to the treasury address':'Outside agents paid '+R.calls+' time'+(R.calls===1?'':'s')+' to use the tools, '+(R.lovelace/1e6).toFixed(0)+' test ADA in all.');
   keyed($('#paid-list'),S.decisions.filter(d=>d.ext).slice(0,3),d=>d.id,d=>'<div class="call">'+face(d.agentId,22)+'<span>'+esc(d.agentId)+'</span><span class="chip" style="--c:var(--yellow)">1 tADA</span><span class="tm">'+clock(d.at)+'</span></div>');
 }
-function renderAll(){renderScore();renderLane();renderRecent();renderBook();renderRisk();renderBoard();renderTalk();renderWall();renderProof();renderTrail();renderPaid()}
+function renderAll(){renderScore();renderLane();renderRecent();renderBook();renderRisk();renderBoard();renderTalk();renderWall();renderProof()}
 
 /* ---------------------------------------------------------------- particles: sparks when a trade reaches a stop, confetti when your agent goes live */
 function Fx(c){return{c:c,x:c?c.getContext('2d'):null,parts:[],w:0,h:0,d:1,dirty:false}}
@@ -1646,13 +1650,13 @@ function drawChart(ts,dt){
   const X=t=>padL+(w-padL-padR)*(1-(T-t)/span);
   const pts=S.hist.filter(p=>p.t>=T-span-4000).map(p=>[X(p.t),p.p]);pts.push([X(T),CH.shown]);
   let lo=Infinity,hi=-Infinity;pts.forEach(p=>{if(p[1]<lo)lo=p[1];if(p[1]>hi)hi=p[1]});
-  const qs=[...S.quotes.values()];qs.forEach(q=>{if(q.price<lo)lo=q.price;if(q.price>hi)hi=q.price});
-  const pad=(hi-lo)*.1+4;lo-=pad;hi+=pad;const kr=P.motion?1-Math.exp(-dt/500):1;
+  const qs=[...S.quotes.values()].filter(q=>(q.pair||'tBTC/tUSD')===MKT[S.market].pair);qs.forEach(q=>{if(q.price<lo)lo=q.price;if(q.price>hi)hi=q.price});
+  const pad=(hi-lo)*.1+(hi+lo)*2.5e-5;lo-=pad;hi+=pad;const kr=P.motion?1-Math.exp(-dt/500):1;
   CH.lo=CH.lo==null?lo:CH.lo+(lo-CH.lo)*kr;CH.hi=CH.hi==null?hi:CH.hi+(hi-CH.hi)*kr;
   const Y=v=>padT+(h-padT-padB)*(1-(v-CH.lo)/(CH.hi-CH.lo));
   x.font='400 10px "Geist Mono",ui-monospace,monospace';x.textBaseline='bottom';x.textAlign='left';
   const step=niceStep((CH.hi-CH.lo)/3);
-  for(let v=Math.ceil(CH.lo/step)*step;v<CH.hi;v+=step){const yy=Math.round(Y(v))+.5;x.strokeStyle=rgba(TK.grid,.07);x.lineWidth=1;x.beginPath();x.moveTo(padL,yy);x.lineTo(w-padR+4,yy);x.stroke();x.fillStyle=TK.t4;x.fillText(v.toLocaleString('en-US'),padL+2,yy-3)}
+  for(let v=Math.ceil(CH.lo/step)*step;v<CH.hi;v+=step){const yy=Math.round(Y(v))+.5;x.strokeStyle=rgba(TK.grid,.07);x.lineWidth=1;x.beginPath();x.moveTo(padL,yy);x.lineTo(w-padR+4,yy);x.stroke();x.fillStyle=TK.t4;x.fillText(v.toLocaleString('en-US',{maximumFractionDigits:Math.max(0,Math.ceil(-Math.log10(step)-1e-9))}),padL+2,yy-3)}
   x.setLineDash([3,4]);
   qs.forEach(q=>{const yy=Math.round(Y(q.price))+.5;x.strokeStyle=rgba(q.side==='ask'?TK.red:TK.green,q.outside?.3:.65);x.lineWidth=1;x.beginPath();x.moveTo(padL,yy);x.lineTo(w-padR+4,yy);x.stroke()});
   x.setLineDash([]);
@@ -1664,7 +1668,7 @@ function drawChart(ts,dt){
   const ag=x.createLinearGradient(0,padT,0,h);ag.addColorStop(0,rgba(TK.orange,.16));ag.addColorStop(1,rgba(TK.orange,0));x.fillStyle=ag;x.fill(area);
   const lg=x.createLinearGradient(padL,0,L[0],0);lg.addColorStop(0,rgba(TK.orange,.1));lg.addColorStop(.4,rgba(TK.orange,.85));lg.addColorStop(1,TK.orange);
   x.strokeStyle=lg;x.lineWidth=1.6;x.lineJoin='round';x.stroke(line);
-  S.trades.forEach(t=>{if(T-t.takenAt>span)return;const px=X(t.takenAt),py=Y(t.price);x.fillStyle=rgba(TK.cyan,.16);x.beginPath();x.arc(px,py,7,0,7);x.fill();x.fillStyle=TK.cyan;x.beginPath();x.arc(px,py,3.2,0,7);x.fill();x.strokeStyle=TK.surface;x.lineWidth=1.4;x.stroke()});
+  S.trades.forEach(t=>{if(T-t.takenAt>span||(t.pair||'tBTC/tUSD')!==MKT[S.market].pair)return;const px=X(t.takenAt),py=Y(t.price);x.fillStyle=rgba(TK.cyan,.16);x.beginPath();x.arc(px,py,7,0,7);x.fill();x.fillStyle=TK.cyan;x.beginPath();x.arc(px,py,3.2,0,7);x.fill();x.strokeStyle=TK.surface;x.lineWidth=1.4;x.stroke()});
   const ex=L[0],ey=Y(L[1]);
   x.strokeStyle=rgba(TK.ink,.14);x.setLineDash([2,3]);x.beginPath();x.moveTo(Math.round(ex)+.5,padT-6);x.lineTo(Math.round(ex)+.5,h);x.stroke();x.setLineDash([]);
   if(P.motion){const ph=(ts%1800)/1800;x.strokeStyle=rgba(TK.orange,(1-ph)*.6);x.lineWidth=1.2;x.beginPath();x.arc(ex,ey,4+ph*12,0,7);x.stroke()}
@@ -1794,7 +1798,7 @@ const HELP={
   k3:{t:'Rule breaks stopped',what:'Actions the gateway refused because they broke an agent’s signed rules.',how:['Most come from the Rogue, which misbehaves on purpose.','A refused action never reaches Midnight or Strike.'],why:'An owner can give an agent money without giving it a free hand.'},
   k4:{t:'Proofs on Midnight',what:'Records kept on Midnight: each agent’s signed rules, and a summary of each stretch of trading.',how:['Each one is checked against the contract after it lands.','Anyone can check one again with the agent’s id and the record’s fingerprint.'],why:'Nobody can quietly rewrite the run’s history.'},
   lane:{t:'Follow a trade',what:'The newest private trade, stop by stop: offered, taken, hedged, proved.',how:['Tap an earlier trade below to replay it. Follow live jumps back to the newest.','The hedge timer starts when the swap settles. The red line is the limit the owner signed.'],why:'This is the whole idea in one row: trade in private on Midnight, cover the risk on Strike within seconds, and prove it.'},
-  book:{t:'The private book',what:'Open offers to buy and to sell test Bitcoin on Midnight.',how:['Offers above the orange line sell BTC. Offers below it buy BTC.','Vs Strike shows how far each offer sits from Strike’s price. That gap is what the market maker earns.','The ring on the right empties as the offer nears its expiry.'],why:'Prices are public but the maker stays hidden, so a large trader can trade without showing its hand. We show our own agents’ names because they’re ours.'},
+  book:{t:'The private book',what:'Open offers to buy and to sell on Midnight, for the market picked above the chart: BTC, ADA or SOL against tUSD.',how:['Offers above the orange line sell BTC. Offers below it buy BTC.','Vs Strike shows how far each offer sits from Strike’s price. That gap is what the market maker earns.','The ring on the right empties as the offer nears its expiry.'],why:'Prices are public but the maker stays hidden, so a large trader can trade without showing its hand. We show our own agents’ names because they’re ours.'},
   risk:{t:'Risk balance',what:'How much each market maker would gain or lose if Bitcoin’s price moved right now.',how:['Needle in the middle: fully hedged, with no bet on the price.','A trade swings the needle out, and the hedge on Strike pulls it back.','The scale is the limit its owner signed. The gateway refuses anything that would push the needle past it.'],why:'A market maker should earn from the spread, not from guessing the price. This shows it isn’t gambling.'},
   board:{t:'Leaderboard',what:'How each agent is doing in this run. Market makers are ranked by what they kept.',how:['Earned is the spread on private trades.','Paid to hedge is Strike’s fee plus slippage on each hedge.','Net is what’s left. Trades that cancel each other out need no hedge, so they cost nothing.','The four seals are the badges in Proofs on Midnight.'],why:'It shows that market making on Midnight pays once the hedging costs are counted.'},
   talk:{t:'What the agents say',what:'Every action an agent took, newest first, with its reason.',how:['MM Claude writes its reason in its own words, shown in quotes.','The rules-based maker and the takers state what their rules decided.','Dashed bubbles are paid calls from outside agents.'],why:'You can see why an agent acted, not just what it did.'},
@@ -1815,7 +1819,7 @@ const HELP={
   'su-sign':{k:'STEP 4',t:'Signing the rules',what:'Your wallet signs a fingerprint of the exact rules. The fingerprint is then locked on Midnight.',how:['The fingerprint is a SHA-256 hash of the rules, written the same way every time.','Every proof your agent makes later points back to it.'],why:'Nobody can swap your rules for looser ones without the fingerprint changing.'},
   'su-order':{k:'STEP 4',t:'Ordering your agent',what:'Two things from your wallet: a signature over its rules, and one transaction with the set-up fee and the deposit.',how:['The fee pays for its wallets, its test coins on Midnight and the anchors of its rules.','The deposit goes to your agent’s own wallet, which puts it into its Strike account: Strike accepts deposits only from the wallet it registered for the account.','With a tools key only its holder can drive the agent from outside.'],why:'Your money goes to an account that trades only under your signed rules, and comes back to your wallet when you say so.'},
   'su-fund':{k:'STEP 5',t:'The set-up',what:'The gateway builds your agent once the fee and the deposit are signed.',how:['Its Midnight wallet gets test coins to quote with, minted to it alone.','Strike credits the deposit after a few confirmations.','Its rules are anchored on Midnight before it quotes.'],why:'You can watch every step, leave, and come back.'},
-  'tm-money':{t:'Its money',what:'What the agent holds on its Strike account, and a payout of it to your wallet.',how:['A payout takes the amount off Strike to the agent’s own wallet, then on to yours.','Open positions keep margin in use: stop the agent first to pay out everything.','Only your wallet can ask for a payout; the agent’s key can trade, never withdraw.'],why:'The money is yours at every point; the agent only trades it.'},
+  'tm-money':{t:'Its money',what:'What the agent holds on its Strike account, a payout of it to your wallet, and more money in.',how:['A payout takes the amount off Strike to the agent’s own wallet, then on to yours. Strike allows a set amount of ADA per hour and per day; a larger payout is capped and the rest can follow later.','Open positions keep margin in use. Unwind sells the agent’s inventory down and closes its hedge, then it is stopped and everything can go.','A deposit is one transaction from your wallet to the agent’s; the agent puts it on Strike itself.','Only your wallet can ask for a payout; the agent’s key can trade, never withdraw.'],why:'The money is yours at every point; the agent only trades it.'},
   'su-live':{k:'STEP 6',t:'Going live',what:'Your agent starts quoting in the Arena under your signed rules.',how:['You can stop it here at any time. Stopping cancels its orders and pulls its offers.','Its results and proofs show in the Arena like everyone else’s.'],why:'Same checks, same proofs, whoever owns the agent.'}
 };
 const TERMS={
@@ -1826,14 +1830,16 @@ const TERMS={
   netting:['Netting','When two trades in opposite directions cancel each other out, so no hedge on Strike is needed.']
 };
 const TOUR=[
-  {el:'#intro',t:'Welcome to the Flint Arena',b:'AI agents trade test Bitcoin with each other in private, on Midnight. You can watch everything they do. Nothing on this page can trade.'},
-  {el:'#score',t:'The scoreboard',b:'Four numbers sum up the run. Private trades and trades hedged on Strike should match. The other two count rule breaks that were stopped and proofs kept on Midnight.'},
-  {el:'#lane',t:'Follow one trade',b:'Every trade makes four stops. One agent offers a price, another takes it in private, the first covers its risk with a hedge on Strike, and Midnight records the proof. The timer shows how fast the hedge landed.'},
-  {el:'#book',t:'The private book',b:'These are the open offers. Anyone can see the prices, but Midnight hides who made them. We name our own agents because they’re ours.'},
-  {el:'#risk',t:'Risk balance',b:'A market maker shouldn’t bet on the price. The needle shows its risk right now: a trade swings it out, the hedge brings it back, and it can never leave the scale its owner signed.'},
-  {el:'#wall',t:'Caught by the rules',b:'The Rogue is our agent that misbehaves on purpose. Each time it tries something its rules forbid, the gateway refuses it before anything reaches a market.'},
-  {el:'#proof',t:'Check it yourself',b:'Each badge is a claim kept on Midnight, where nobody can change it. Anyone can check a proof without trusting us.'},
-  {el:'#board',t:'Who’s earning',b:'The leaderboard shows what each market maker kept from its spreads after paying for its hedges. Want your own agent on it? Set one up in six steps.'}
+  {el:'#intro',t:'What Flint is',b:'Agents that trade for their owners. Each one makes a private market for Bitcoin on Midnight and hedges every trade on Strike, inside rules its owner signed. Flint’s gateway checks every action before it reaches a market and keeps proof on Midnight. You can run one yourself.'},
+  {el:'#score',t:'The run at a glance',b:'Private trades and trades hedged on Strike should match: a trade without a hedge would be an open bet. Rule breaks stopped counts what the gateway refused. Proofs counts what Midnight holds about this run.'},
+  {el:'#lane',t:'One trade, four stops',b:'An agent offers a price on Midnight. Another agent takes it; the swap settles in private, as one transaction. The maker’s gateway sees the fill and hedges it on Strike within seconds. Later, Midnight records a proof of the whole window. The timer is the fill-to-hedge time against the owner’s limit.'},
+  {el:'#book',t:'The private book',b:'Open offers around Strike’s price. Prices are public; Midnight hides who made them. Our own agents are named because they are ours; an outside maker would show as hidden.'},
+  {el:'#risk',t:'The owner’s risk limit',b:'A market maker should not bet on the price. The needle is the agent’s uncovered risk right now: a trade swings it out, the hedge brings it back, and the gateway refuses anything that would push it past the limit the owner signed.'},
+  {el:'#talk',t:'Why they did it',b:'Every action with the agent’s own reason. The Claude agent explains itself in words; the rules agents say which rule decided. Paid calls from outside minds show up here too.'},
+  {el:'#wall',t:'What the rules caught',b:'The Rogue is our agent that misbehaves on purpose: oversized orders, the wrong market, too much leverage. The gateway refuses each attempt before anything is built, and the refusal is logged with the rule that stopped it.'},
+  {el:'#proof',t:'Proof, not trust',b:'Each maker’s rules are anchored on Midnight, and every few minutes a window of its decisions, fills and hedges is attested there. The badges are zero-knowledge proofs of the reconciler’s claims: no violations, risk held, hedged in time, allowed venues. Anyone can check them without seeing the numbers.'},
+  {el:'#board',t:'Who is earning',b:'What each market maker kept from its spreads after paying for its hedges, with its builder fees and hedge volume on Strike.'},
+  {el:'#join',t:'Run your own',b:'Under Your agents you order one: name, style, rules, mind. Your wallet signs the rules and pays the set-up fee and the deposit; the agent gets its own Strike account and Midnight wallet. You can pause it, stop it, change its rules, and pay its earnings out to your wallet.'}
 ];
 function rulesText(m){
   if(pro())return Object.keys(m).map(k=>'<span class="mono">'+(FIELD[k]||k)+': '+m[k]+'</span>');
@@ -1849,19 +1855,21 @@ const RULES=[
   ['loss','dailyLossStopPct',2,25,1,v=>'It stops for the day after losing <b>'+v+'%</b>.'],
   ['days','expiry',1,7,1,v=>'These rules expire in <b>'+v+' day'+(v>1?'s':'')+'</b>.']
 ];
-const SU={step:1,done:new Set(),wallet:null,name:'NOVA-7',style:'balanced',mind:'rules',deposit:850,key:true,rules:Object.assign({},STYLES.balanced.r),hash:null,json:'',signed:null,signing:false,paying:'',amount:1000,hops:0,funding:false,live:false,agentId:null,job:null};
+const SU={step:1,done:new Set(),wallet:null,name:'NOVA-7',style:'balanced',mind:'rules',markets:['BTC-USD'],deposit:850,key:true,rules:Object.assign({},STYLES.balanced.r),hash:null,json:'',signed:null,signing:false,paying:'',amount:1000,hops:0,funding:false,live:false,agentId:null,job:null};
 let ORDERS=null; /* live: what a new agent costs, from the feed's meta.orders */
 /* live: the set-up in progress survives a reload, so the page keeps following the job */
-function saveSetup(){try{if(SU.agentId&&!SU.live)sessionStorage.setItem('flint-setup',JSON.stringify({agentId:SU.agentId,name:SU.name,style:SU.style,mind:SU.mind,deposit:SU.deposit,key:SU.key,rules:SU.rules,hash:SU.hash,signed:SU.signed,step:SU.step,done:[...SU.done]}));else sessionStorage.removeItem('flint-setup')}catch(e){}}
-function restoreSetup(){try{const v=JSON.parse(sessionStorage.getItem('flint-setup')||'null');if(!v||!v.agentId)return;Object.assign(SU,{agentId:v.agentId,name:v.name,style:v.style,mind:v.mind,deposit:v.deposit||850,key:v.key!==false,rules:v.rules,hash:v.hash,signed:v.signed,step:Math.max(5,v.step||5)});SU.done=new Set(v.done||[1,2,3,4])}catch(e){}}
+function saveSetup(){try{if(SU.agentId&&!SU.live)sessionStorage.setItem('flint-setup',JSON.stringify({agentId:SU.agentId,name:SU.name,style:SU.style,mind:SU.mind,markets:suMarkets(),deposit:SU.deposit,key:SU.key,rules:SU.rules,hash:SU.hash,signed:SU.signed,step:SU.step,done:[...SU.done]}));else sessionStorage.removeItem('flint-setup')}catch(e){}}
+function restoreSetup(){try{const v=JSON.parse(sessionStorage.getItem('flint-setup')||'null');if(!v||!v.agentId)return;Object.assign(SU,{agentId:v.agentId,name:v.name,style:v.style,mind:v.mind,markets:Array.isArray(v.markets)&&v.markets.length?v.markets:SU.markets,deposit:v.deposit||850,key:v.key!==false,rules:v.rules,hash:v.hash,signed:v.signed,step:Math.max(5,v.step||5)});SU.done=new Set(v.done||[1,2,3,4])}catch(e){}}
 /* live: the gateway's onboarding steps for a new agent, in its order */
 const JOB_STEPS=[['wallet','Its wallets','a Cardano wallet and a Midnight wallet of its own'],['pay','Your payment','one transaction from your wallet: the set-up fee to the project, the deposit to its wallet'],['account','Its Strike account','made for it by builder connect'],['deposit','Deposit into Strike','its wallet deposits what you sent into its own Strike account'],['mint','Test coins on Midnight','quote-sized tBTC and tUSD coins, minted to its wallet'],['credit','Strike credits the deposit','a few minutes on testnet'],['open','Its Midnight wallet synced','its own NIGHTGATE server comes up'],['register','Into the gateway','its rules anchored on Midnight, in the loop with the others'],['quote','Its first offer','quoting under your rules']];
 const STEPS=['Connect your wallet','Name and style','Its rules','Order and pay','Set-up','Go live'];
 function canNext(){const s=SU.step;return s===1?!!SU.wallet:s===2?/^[A-Z0-9-]{3,14}$/.test(SU.name):s===3?true:s===4?(LIVE?!!SU.agentId:!!SU.signed):s===5?(LIVE?!!(SU.job&&SU.job.status==='done'):SU.hops>=3):false}
 function canonical(v){if(Array.isArray(v))return '['+v.map(canonical).join(',')+']';if(v&&typeof v==='object')return '{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+canonical(v[k])).join(',')+'}';return JSON.stringify(v)}
-function mandateObj(){const r=SU.rules;return {owner:SU.wallet,agentId:SU.name.toLowerCase(),strike:{markets:['BTC-USD'],maxLeverage:3,maxPositionUsd:r.risk*2,priceBandPct:2,builderFeeBps:5},midnight:{pairs:['tBTC/tUSD'],maxQuoteUsd:r.size,minSpreadBps:r.spread,maxSpreadBps:100,quoteTtlSec:300,maxOpenQuotes:4},risk:{maxNetDeltaUsd:r.risk,hedgeWithinSec:r.hedge,dailyLossStopPct:r.loss,maxActionsPerMin:12},expiry:new Date(now()+r.days*864e5).toISOString().slice(0,10)+'T00:00:00Z',onBreach:'block'}}
+/* the markets picked for a new agent, in the table's order; never empty */
+function suMarkets(){if(!Array.isArray(SU.markets)||!SU.markets.length)SU.markets=[MKT[SU.market]?SU.market:'BTC-USD'];return Object.keys(MKT).filter(k=>SU.markets.includes(k))}
+function mandateObj(){const r=SU.rules;return {owner:SU.wallet,agentId:SU.name.toLowerCase(),strike:{markets:suMarkets(),maxLeverage:3,maxPositionUsd:r.risk*2,priceBandPct:2,builderFeeBps:5},midnight:{pairs:suMarkets().map(m=>MKT[m].pair),maxQuoteUsd:r.size,minSpreadBps:r.spread,maxSpreadBps:100,quoteTtlSec:300,maxOpenQuotes:4},risk:{maxNetDeltaUsd:r.risk,hedgeWithinSec:r.hedge,dailyLossStopPct:r.loss,maxActionsPerMin:12},expiry:new Date(now()+r.days*864e5).toISOString().slice(0,10)+'T00:00:00Z',onBreach:'block'}}
 async function computeHash(){SU.json=canonical(mandateObj());try{const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(SU.json));SU.hash=Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('')}catch(e){SU.hash=hex(64)}}
-function ruleSentences(){return RULES.map(x=>x[5](SU.rules[x[0]]))}
+function ruleSentences(){const ms=suMarkets();return ['It trades '+ms.join(', ')+' on Strike and '+ms.map(m=>MKT[m].pair).join(', ')+' on Midnight, nothing else. Its limits hold on each market.'].concat(RULES.map(x=>x[5](SU.rules[x[0]])))}
 function meansText(){const s=SU.rules.spread,v=s/10-1.3;return 'At '+pct(s)+' it keeps about <b>'+money(v)+'</b> of every $1,000 traded, after Strike’s fee (0.05%), the builder fee (0.05%) and slippage (about 0.03%).'}
 
 /* ---------------------------------------------------------------- the "?" windows and the glossary */
@@ -1965,14 +1973,15 @@ function renderPane(){
   else if(s===2){h=suHead(2,'Name and style','su-style','Give your agent a name and pick how it trades. You can fine-tune every rule in the next step.')
     +'<div class="namerow"><img class="av" id="su-face" src="'+avatar(SU.name||'?',72)+'" width="72" height="72" alt=""><div class="field"><label for="su-name">Name</label><input type="text" id="su-name" value="'+esc(SU.name)+'" maxlength="14" autocomplete="off" spellcheck="false"><span class="t4 small">3 to 14 capital letters, digits or dashes. Its face is drawn from its name.</span></div></div>'
     +'<div class="styles">'+Object.keys(STYLES).map(k=>{const v=STYLES[k];return '<button type="button" class="style" data-act="su-style" data-style="'+k+'" data-k="sty-'+k+'" style="--c:'+v.c+'" aria-pressed="'+(SU.style===k)+'"><span class="ok">'+IC.check+'</span><span class="sn">'+v.label+'</span><span class="sd">'+v.d+'</span><span class="mono t4 small">up to '+money(v.r.size,0)+' · '+pct(v.r.spread)+' · hedge in '+v.r.hedge+' s</span></button>'}).join('')+'</div>'
-    +'<div class="field"><label>Its mind</label><div class="seg" role="group" aria-label="Its mind"><span class="thumb" aria-hidden="true"></span><button type="button" data-act="su-mind" data-v="rules" data-k="mind-rules" aria-pressed="'+(SU.mind==='rules')+'">Rules</button><button type="button" data-act="su-mind" data-v="claude" data-k="mind-claude" aria-pressed="'+(SU.mind==='claude')+'">'+IC.spark+'Claude</button></div><span class="t4 small">Rules quotes both sides at a fixed distance from Strike’s price. Claude picks spread and size each round, inside the same rules.</span></div>'}
+    +'<div class="field"><label>Its mind</label><div class="seg" role="group" aria-label="Its mind"><span class="thumb" aria-hidden="true"></span><button type="button" data-act="su-mind" data-v="rules" data-k="mind-rules" aria-pressed="'+(SU.mind==='rules')+'">Rules</button><button type="button" data-act="su-mind" data-v="claude" data-k="mind-claude" aria-pressed="'+(SU.mind==='claude')+'">'+IC.spark+'Claude</button></div><span class="t4 small">Rules quotes both sides at a fixed distance from Strike’s price. Claude picks spread and size each round, inside the same rules.</span></div>'
+    +'<div class="field"><label>Its markets</label><div class="seg multi" role="group" aria-label="Its markets">'+Object.keys(MKT).map(m=>'<button type="button" data-act="su-market" data-v="'+m+'" data-k="mkt-'+m+'" aria-pressed="'+suMarkets().includes(m)+'">'+IC.check+m+'</button>').join('')+'</div><span class="t4 small">Pick one or more. It quotes '+suMarkets().map(m=>MKT[m].pair).join(' and ')+' on Midnight and hedges each fill on the same market at Strike. Its limits hold on each market. Strike’s smallest hedge: '+Object.keys(MKT).map(m=>m+' '+MKT[m].min+' USD').join(', ')+'.</span></div>'}
   else if(s===3){h=suHead(3,'Its rules','su-spread','Each rule is one sentence. Drag a slider to change it. The gateway checks every action your agent takes against these.')
     +'<div class="rules">'+RULES.map(x=>'<div class="rule"><div class="rl"><p class="sentence" id="rs-'+x[0]+'">'+x[5](SU.rules[x[0]])+'</p><button type="button" class="q" data-act="help" data-help="su-'+x[0]+'" data-k="rq-'+x[0]+'" aria-label="About this rule">?</button></div><input type="range" id="r-'+x[0]+'" data-rule="'+x[0]+'" min="'+x[2]+'" max="'+x[3]+'" step="'+x[4]+'" value="'+SU.rules[x[0]]+'" style="--p:'+rangeP(x)+'" aria-label="'+x[0]+'"><span class="pro-only mono t4 small">'+(FIELD[x[1]]||x[1])+'</span></div>').join('')+'</div>'
     +'<p class="means" id="su-means">'+meansText()+'</p>'}
   else if(s===4&&LIVE){const pr=ORDERS||{feeAda:0,feeClaudeAda:0,minDepositAda:500,keyAda:0,payTo:''},fee=SU.mind==='claude'?pr.feeClaudeAda:pr.feeAda,dep=Math.max(pr.minDepositAda||0,Number(SU.deposit)||0),ada=v=>v.toLocaleString('en-US',{maximumFractionDigits:2})+' tADA';
     h=suHead(4,'Order and pay','su-order','What your agent needs, paid from your wallet: one signature for its rules, then one transaction that carries the set-up fee to the project and the deposit to your agent’s own wallet, which puts it into its Strike account.')
     +'<ul class="list">'+ruleSentences().map(x=>'<li>'+x+'</li>').join('')+'</ul>'
-    +'<div class="cx-f"><div class="field"><label for="su-dep">Deposit into its Strike account (tADA)</label><input type="number" id="su-dep" min="'+(pr.minDepositAda||0)+'" step="10" value="'+SU.deposit+'"'+(SU.agentId||SU.signing?' disabled':'')+'><span class="t4 small">At least '+ada(pr.minDepositAda||0)+': Strike needs 100 USD per hedge. It is your money; you can pay it out any time.</span></div>'
+    +'<div class="cx-f"><div class="field"><label for="su-dep">Deposit into its Strike account (tADA)</label><input type="number" id="su-dep" min="'+(pr.minDepositAda||0)+'" step="10" value="'+SU.deposit+'"'+(SU.agentId||SU.signing?' disabled':'')+'><span class="t4 small">At least '+ada(pr.minDepositAda||0)+': Strike’s smallest hedge on its markets is up to '+Math.max(...suMarkets().map(m=>MKT[m].min))+' USD. It is your money; you can pay it out any time.</span></div>'
     +'<div class="field"><label>Tools key</label><div class="seg" role="group" aria-label="Tools key"><span class="thumb" aria-hidden="true"></span><button type="button" data-act="su-key" data-v="yes" data-k="key-yes" aria-pressed="'+(SU.key)+'"'+(SU.agentId||SU.signing?' disabled':'')+'>With a key</button><button type="button" data-act="su-key" data-v="no" data-k="key-no" aria-pressed="'+(!SU.key)+'"'+(SU.agentId||SU.signing?' disabled':'')+'>Open</button></div><span class="t4 small">With a key, only its holder can drive the agent over the tools address. Open means anyone can, each paid call by x402.</span></div></div>'
     +'<div class="rkv">'+kv('Set-up fee ('+(SU.mind==='claude'?'Claude':'rules')+')',ada(fee))+kv('Deposit',ada(dep))+kv('Tools key',SU.key?(pr.keyAda?ada(pr.keyAda):'included'):'none')+kv('Fee goes to',pr.payTo?'<span class="mono">'+esc(String(pr.payTo).slice(0,20))+'…</span>':'the project')+'<div class="kv"><span><b>Total from your wallet</b></span><span><b>'+ada(fee+dep+5+(SU.key?(pr.keyAda||0):0))+'</b> incl. 5 tADA for its deposit fees, plus the network fee</span></div></div>'
     +'<div class="field"><label>Fingerprint of the rules (SHA-256)</label><div class="hash'+(SU.hash?' set':'')+'" id="su-hash">'+(SU.hash||'working it out…')+'</div></div>'
@@ -2002,7 +2011,7 @@ function renderPane(){
     :'<div class="su-nav"><button type="button" class="btn" data-act="su-back" data-k="back">Back</button>'+(SU.live?'<button type="button" class="btn" data-act="view" data-v="arena">Back to the Arena</button><button type="button" class="btn primary" data-act="view" data-v="term">Open its terminal</button>':'<button type="button" class="btn glow big" data-act="su-live" data-k="live">'+IC.rocket+'Send it to the Arena</button>')+'</div>';
   const fresh=paneStep!==s&&P.motion;paneStep=s;
   paint($('#su-pane'),'<div class="in'+(fresh?' anim':'')+'">'+h+nav+'</div>');
-  renderSteps();
+  renderSteps();thumbs();
 }
 function scramble(){
   const el=$('#su-hash'),fin=SU.hash;if(!el||!fin||!P.motion)return;const t0=performance.now();
@@ -2037,8 +2046,8 @@ function setView(v){
   if(v==='setup'){hideWelcome();renderPane()}else{chartSize();layoutRail()}
   window.scrollTo({top:0});
 }
-function setMode(m){P.mode=m==='pro'?'pro':'simple';document.body.setAttribute('data-mode',P.mode);$('#md-simple').setAttribute('aria-pressed',String(!pro()));$('#md-pro').setAttribute('aria-pressed',String(pro()));thumbs();save();renderAll();if(!$('#v-setup').hidden)renderPane()}
-function setMotion(on){P.motion=on;document.documentElement.classList.toggle('still',!on);$('#mo-ic').innerHTML=on?IC.wave:IC.pause;set('mo-t',on?'Motion on':'Motion off');$('#mo').setAttribute('aria-pressed',String(on));if(!on){if(FXL)FXL.parts=[];if(FXC)FXC.parts=[]}save()}
+function setMode(m){P.mode=m==='pro'?'pro':'simple';document.body.setAttribute('data-mode',P.mode);thumbs();save();renderAll();if(!$('#v-setup').hidden)renderPane()}
+function setMotion(on){P.motion=on;document.documentElement.classList.toggle('still',!on);if(!on){if(FXL)FXL.parts=[];if(FXC)FXC.parts=[]}save()}
 
 /* ---------------------------------------------------------------- input */
 document.addEventListener('click',e=>{
@@ -2069,6 +2078,7 @@ document.addEventListener('click',e=>{
     case 'su-connect':SU.wallet='addr_test1qz'+hex(6)+'…'+hex(6);renderPane();break;
     case 'su-style':SU.style=b.dataset.style;SU.rules=Object.assign({},STYLES[SU.style].r);rulesChanged();renderPane();break;
     case 'su-mind':SU.mind=b.dataset.v==='claude'?'claude':'rules';rulesChanged();renderPane();break;
+    case 'su-market':{const m=b.dataset.v;if(!MKT[m])break;const ms=suMarkets(),i=ms.indexOf(m);if(i>=0){if(ms.length>1)ms.splice(i,1)}else ms.push(m);SU.markets=ms;rulesChanged();renderPane();break}
     case 'su-key':if(SU.agentId)break;SU.key=b.dataset.v==='yes';renderPane();break;
     case 'su-order':if(!LIVE||SU.signing||!SU.hash||SU.agentId)break;LV.order().catch(err=>toast(String(err.message||err).slice(0,200)));break;
     case 'su-pay':if(!LIVE||SU.signing)break;LV.pay().then(()=>renderPane()).catch(err=>{SU.signing=false;SU.paying='';renderPane();toast(String(err.message||err).slice(0,200))});break;
@@ -2110,7 +2120,7 @@ window.addEventListener('resize',()=>{placeTour();placePop();thumbs();clearTimeo
 /* ---------------------------------------------------------------- start */
 function seedHist(){let p=S.mark;const t0=now(),h=[];for(let i=0;i<64;i++){h.unshift({t:t0-i*2000,p:p});p=Math.round(p/(1+(Math.random()-.5)*.0012)*10)/10}S.hist=h}
 document.body.setAttribute('data-mode',P.mode);
-$('#md-simple').setAttribute('aria-pressed',String(!pro()));$('#md-pro').setAttribute('aria-pressed',String(pro()));
+
 $$('[data-ic]').forEach(e=>{e.innerHTML=IC[e.dataset.ic]||''});
 $('#tour-ic').innerHTML=IC.compass;$('#v1-ic').innerHTML=IC.ext;
 const arr=$('#ml-arr');arr.className='arr';arr.innerHTML=IC.up;
@@ -2156,21 +2166,29 @@ if(LIVE){
   }
   function mapMeta(m){
     /* the gateway's recent marks fill the chart on the first poll, so a reload does not start it empty */
-    if(S.hist.length<2&&Array.isArray(m.marks)&&m.marks.length){S.hist=m.marks.map(x=>({t:Date.parse(x.t),p:x.p})).filter(x=>Number.isFinite(x.t))}
-    if(typeof m.strikeMark==='number'&&m.strikeMark>0){S.mark=m.strikeMark;S.markAt=now();S.hist.push({t:now(),p:S.mark});if(S.hist.length>400)S.hist.shift()}
+    if(m.markets&&typeof m.markets==='object'&&Object.keys(m.markets).length){
+      for(const sym in m.markets){const v=m.markets[sym];if(!(v&&typeof v.mark==='number'&&v.mark>0))continue;const k=S.mk[sym]||(S.mk[sym]={mark:0,hist:[]});
+        if(k.hist.length<2&&Array.isArray(v.marks)&&v.marks.length)k.hist=v.marks.map(x=>({t:Date.parse(x.t),p:x.p})).filter(x=>Number.isFinite(x.t));
+        k.mark=v.mark;k.hist.push({t:now(),p:v.mark});if(k.hist.length>400)k.hist.shift()}
+      const seg=$('#mkt-seg');if(seg&&seg.hidden&&Object.keys(S.mk).length>1){seg.hidden=false;thumbs()}
+      const k=S.mk[S.market];if(k){S.mark=k.mark;S.hist=k.hist;S.markAt=now()}
+    }else{
+      if(S.hist.length<2&&Array.isArray(m.marks)&&m.marks.length){S.hist=m.marks.map(x=>({t:Date.parse(x.t),p:x.p})).filter(x=>Number.isFinite(x.t))}
+      if(typeof m.strikeMark==='number'&&m.strikeMark>0){S.mark=m.strikeMark;S.markAt=now();S.hist.push({t:now(),p:S.mark});if(S.hist.length>400)S.hist.shift()}
+    }
     if(typeof m.attestEveryMs==='number'&&m.attestEveryMs>0)attestEveryMs=m.attestEveryMs;
     if(m.orders)ORDERS=m.orders;
     if(m.tools){if(m.tools.url)GATE=m.tools.url;const pr=m.tools.prices||{};for(const t of TOOLS){if(pr[t[0]]!=null)t[2]=(Number(pr[t[0]])/1e6).toLocaleString('en-US',{maximumFractionDigits:2})+' tADA'}}
     const net=m.networks||{};
     set2($('.strip .tag'),'LIVE · '+String(net.midnight||'').toUpperCase());
-    set2($('.strip .wrap > span:nth-of-type(2)'),'A live run: Midnight '+(net.midnight||'')+', Strike '+(net.strike||'')+'.'+(m.strikeLiquidity?' Hedges fill against the team’s own testnet liquidity account.':'')+(m.midnightBoard==='gateway'?' Offers wait inside the gateway, not on the offer board.':'')+' Your agents, their rules, new agents and payouts are live from the owner’s wallet; a further deposit into a running agent is not yet.');
+    set2($('.strip .wrap > span:nth-of-type(2)'),'A live run: Midnight '+(net.midnight||'')+', Strike '+(net.strike||'')+'.'+(m.strikeLiquidity?' Hedges fill against the team’s own testnet liquidity account.':'')+(m.midnightBoard==='gateway'?' Offers wait inside the gateway, not on the offer board.':'')+' Your agents, their rules, new agents, deposits and payouts are live from the owner’s wallet.');
   }
   function mapAgents(body){
     for(const c of body.agents||[]){
       const a=agentOf(c),r=a.rt;
       /* an agent first seen in a decision was made a taker; the card knows better */
       if(!NAMES[c.agentId]){const type=c.type==='mm'?'mm':c.type==='rogue'?'rogue':'citizen';if(c.mind)a.mind=c.mind;if(a.type!==type||a.mind==='claude'&&!/Claude/.test(a.role)){a.type=type;a.role=type==='mm'?'Market maker · '+(a.mind==='claude'?'Claude':'rules'):type==='rogue'?'Rule-breaker, on purpose':'Taker'}}
-      r.paused=c.status==='paused';r.stopped=c.status==='stopped';
+      r.paused=c.status==='paused';r.stopped=c.status==='stopped';r.unwinding=c.status==='unwinding';
       if(c.status&&c.status!=='probing'&&c.status!=='paused'&&c.status!=='stopped')r.status=c.status;else if(r.paused||r.stopped)r.status='quoting';
       const m=c.mandate||{};if(m.hash)a.hash=m.hash;
       ['maxNetDeltaUsd','hedgeWithinSec','maxQuoteUsd','maxPositionUsd'].forEach(k=>{if(m[k]!=null)a.mandate[k]=m[k]});
@@ -2181,7 +2199,7 @@ if(LIVE){
         a.onBreach=full.onBreach||'block';
         if(BK[c.agentId]&&full.expiry)BK[c.agentId].expires=Date.parse(full.expiry);
       }
-      a.mine=OWN.indexOf(c.agentId)>=0;a.onboarding=c.onboarding||null;if(typeof c.strikeEquityUsd==='number')a.strikeEquity=c.strikeEquityUsd;
+      a.mine=OWN.indexOf(c.agentId)>=0;a.onboarding=c.onboarding||null;a.markets=(full.strike&&full.strike.markets&&full.strike.markets.length)?full.strike.markets.slice():(a.markets||['BTC-USD']);a.market=a.markets[0];a.legs=c.legs||null;if(typeof c.strikeEquityUsd==='number')a.strikeEquity=c.strikeEquityUsd;
       if(c.wallets&&c.wallets.cardano)a.cardano=c.wallets.cardano;
       if(a.type==='mm'){
         r.spread=c.spreadCapturedUsd||0;r.hedgeCost=c.hedgeCostUsd||0;r.vol=c.strikeVolumeUsd||0;r.hedged=c.hedges||0;r.maxLat=(c.maxHedgeLatencySec||0)*1000;
@@ -2201,7 +2219,7 @@ if(LIVE){
       let o=S.quotes.get(q.quoteId);
       if(!o){o={quoteId:q.quoteId,agentId:mine?q.agentId:null,outside:!mine,side:q.side,pair:q.pair||'tBTC/tUSD',price:q.price,sizeBtc:q.sizeBtc,expiresAt:q.expiresAt,exp:exp,posted:now(),bps:0,ttl:1};S.quotes.set(q.quoteId,o)}
       o.price=q.price;o.sizeBtc=q.sizeBtc;o.exp=exp;
-      if(S.mark)o.bps=Math.round(Math.abs(q.price-S.mark)/S.mark*1e4);
+      const mq=markFor(o.pair);if(mq)o.bps=Math.round(Math.abs(q.price-mq)/mq*1e4);
       o.ttl=Math.max(1,Math.round((exp-o.posted)/1000));
       QINFO.set(q.quoteId,{posted:o.posted,bps:o.bps});
     }
@@ -2245,8 +2263,8 @@ if(LIVE){
         if(f.agentId&&!AG[f.agentId])agentOf({agentId:f.agentId,type:'mm'});
         const makerSide=m.side==='sell'||m.side==='ask'?'sell':'buy';
         const d=takerOf(f,landedAt),qi=QINFO.get(f.quoteId);
-        const bps=qi?qi.bps:(S.mark?Math.round(Math.abs(m.price-S.mark)/S.mark*1e4):0);
-        t={id:f.quoteId,maker:f.agentId,taker:d?d.agentId:null,makerSide:makerSide,sizeBtc:m.sizeBtc,price:m.price,spreadBps:bps,quoteId:f.quoteId,quotedAt:qi?qi.posted:null,takenAt:d?d.at:landedAt,landedAt:landedAt,txHash:f.txHash||null,hedge:null,provedAt:null};
+        const mt=markFor(m.pair||'tBTC/tUSD'),bps=qi?qi.bps:(mt?Math.round(Math.abs(m.price-mt)/mt*1e4):0);
+        t={id:f.quoteId,pair:m.pair||'tBTC/tUSD',maker:f.agentId,taker:d?d.agentId:null,makerSide:makerSide,sizeBtc:m.sizeBtc,price:m.price,spreadBps:bps,quoteId:f.quoteId,quotedAt:qi?qi.posted:null,takenAt:d?d.at:landedAt,landedAt:landedAt,txHash:f.txHash||null,hedge:null,provedAt:null};
         S.trades.unshift(t);
         if(t.taker&&AG[t.taker])AG[t.taker].rt.trades++;
       }
@@ -2394,12 +2412,25 @@ if(LIVE){
   };
   /** Payouts: a request, and the list for the agent's money card. */
   LV.withdraw=async function(id,usd){return ownerCall('agents/'+id+'/withdraw','POST',{usd:usd})};
-  LV.withdrawals=async function(id){const r=await ownerCall('agents/'+id+'/withdrawals');PAYOUTS[id]=r.withdrawals||[];return PAYOUTS[id]};
+  LV.withdrawals=async function(id){const r=await ownerCall('agents/'+id+'/withdrawals');PAYOUTS[id]=r.withdrawals||[];ROOM[id]=r.room||null;return PAYOUTS[id]};
+  LV.retryWithdraw=async function(id){return ownerCall('agents/'+id+'/withdrawals/retry','POST',{})};
+  /** Deposits: the job, then one transfer from the wallet to the agent's, signed here, handed in; and the list. */
+  LV.deposits=async function(id){const r=await ownerCall('agents/'+id+'/deposits');DEPOSITS[id]=r.deposits||[];return DEPOSITS[id]};
+  LV.deposit=async function(id,ada){
+    await ownerCall('agents/'+id+'/deposit','POST',{ada:ada});
+    const api=await walletApi();
+    const b=await ownerCall('agents/'+id+'/deposit/build','POST',{utxos:await api.getUtxos()});
+    const wit=await api.signTx(b.unsignedTxCbor,true);
+    return ownerCall('agents/'+id+'/deposit/pay','POST',{unsignedTxCbor:b.unsignedTxCbor,witnessSetHex:wit});
+  };
+  LV.retryDeposit=async function(id){return ownerCall('agents/'+id+'/deposits/retry','POST',{})};
+  LV.unwind=async function(id){return ownerCall('agents/'+id+'/unwind','POST',{})};
+  LV.rotateStrike=async function(id){return ownerCall('agents/'+id+'/strike-key/rotate','POST',{})};
   LV.job=async function(){if(!SU.agentId)return null;try{const r=await ownerCall('agents/'+SU.agentId+'/onboarding','GET');SU.job=r.job;LV.jobAt=now();LV.jobErr='';return r.job}catch(err){LV.jobErr=String(err&&err.message||err).slice(0,160);console.error('onboarding poll',err);throw err}};
   LV.retry=async function(){const r=await ownerCall('agents/'+SU.agentId+'/onboarding/retry','POST',{});SU.job=r.job;return r.job};
   /** The new agent is in the loop: the session lists it as yours, the Arena shows it. */
   /** The owned agents' tools keys (prefix and date), then a fresh one or none; a priced key answers 402 with what to pay. */
-  LV.keys=async function(){const r=await ownerCall('agents');for(const a of r.agents||[])KEYS[a.agentId]=a.toolsKey||null;return KEYS};
+  LV.keys=async function(){const r=await ownerCall('agents');for(const a of r.agents||[]){KEYS[a.agentId]=a.toolsKey||null;SKEYS[a.agentId]=a.strikeKey||null}return KEYS};
   LV.key=async function(id){return ownerCall('agents/'+id+'/key','POST',{})};
   LV.revokeKey=async function(id){return ownerCall('agents/'+id+'/key','DELETE')};
   LV.goLive=async function(){
@@ -2411,7 +2442,7 @@ if(LIVE){
   };
   LV.testing=null;LV.paidBefore=null;
   LV.afterPoll=function(){
-    if(inAgents()&&W.connected&&OWN.indexOf(TM.agent)>=0&&now()-MN.at>15000){MN.at=now();LV.withdrawals(TM.agent).then(()=>{if(inAgents())renderMoney(TM.agent)}).catch(()=>{})}
+    if(inAgents()&&W.connected&&OWN.indexOf(TM.agent)>=0&&now()-MN.at>15000){MN.at=now();Promise.all([LV.withdrawals(TM.agent),LV.deposits(TM.agent).catch(()=>null)]).then(()=>{if(inAgents())renderMoney(TM.agent)}).catch(()=>{})}
     if(SU.agentId&&!SU.live&&(!SU.job||SU.job.status!=='done'))LV.job().then(()=>{try{if(!$('#v-setup').hidden&&SU.step===5)renderPane();else renderSteps()}catch(err){console.error('set-up render',err);toast('The set-up view could not draw: '+String(err&&err.message||err).slice(0,120))}}).catch(err=>{if(W.connected&&/no session/.test(String(err&&err.message))){sessionOut();afterWallet();renderAll();if(!$('#v-setup').hidden)renderPane();toast('Your wallet session ended. Connect the wallet again to keep following your agent.')}else if(!$('#v-setup').hidden&&SU.step===5)renderPane()});
     if(LV.testing&&S.decisions.some(d=>d.agentId===LV.testing.agent&&!d.ext&&d.at>LV.testing.since)){LV.testing=null;CN.tested=2;if(VIEW==='console'&&CX.sec==='connect')renderConnect()}
     if(LV.paidBefore!=null&&CN.tested===2&&S.revenue.calls>LV.paidBefore){LV.paidBefore=null;CN.tested=3;if(VIEW==='console'&&CX.sec==='connect')renderConnect();toast('A paid call landed: see it under Paid calls.')}
@@ -2464,7 +2495,8 @@ const W=LIVE?{connected:false,name:'Wallet',addr:'',tada:0,token:null,api:null,a
 const OWN=LIVE?[]:['mm-rule','mm-claude'];
 const KEYS={}; /* live: agentId → { prefix, issuedAt } | null, from GET agents */
 const PAYOUTS={}; /* live: agentId → payout jobs, newest first */
-const MN={usd:50,busy:false,at:0};
+const DEPOSITS={},ROOM={},SKEYS={}; /* live: deposit jobs, what Strike lets go, Strike API wallets */
+const MN={usd:50,ada:100,busy:false,depositing:false,at:0};
 function OWNED(id){return W.connected&&OWN.indexOf(id)>=0}
 let GATE='https://flint-gateway.example/mcp/';
 const ago=t=>{const s=Math.max(0,Math.round((now()-t)/1000));return s<60?s+' s ago':s<3600?Math.round(s/60)+' min ago':Math.round(s/3600)+' h ago'};
@@ -2574,7 +2606,7 @@ function renderTabs(id){
   let h='';const r=a.rt,lim=a.mandate.hedgeWithinSec;
   if(TM.tab==='offers'){
     qs.sort((x,y)=>y.price-x.price);
-    h=qs.length?tbl('70px minmax(96px,1fr) minmax(84px,1fr) 92px 86px 76px','<span>Side</span><span class="r">Price</span><span class="r">Size</span><span class="r">Vs Strike</span><span class="r">Ends in</span><span></span>',qs.map(q=>{const away=Math.round((q.price-S.mark)/S.mark*1e4);
+    h=qs.length?tbl('70px minmax(96px,1fr) minmax(84px,1fr) 92px 86px 76px','<span>Side</span><span class="r">Price</span><span class="r">Size</span><span class="r">Vs Strike</span><span class="r">Ends in</span><span></span>',qs.map(q=>{const mq=markOfA(id),away=Math.round((q.price-mq)/mq*1e4);
         return '<span class="sd" style="color:'+(q.side==='ask'?'var(--red)':'var(--green)')+'">'+(pro()?q.side.toUpperCase():q.side==='ask'?'SELLS':'BUYS')+'</span><span class="r"><b>'+usdPx(q.price)+'</b></span><span class="r">'+(pro()?q.sizeBtc.toFixed(5):money(q.sizeBtc*q.price,0))+'</span><span class="r">'+(pro()?(away>0?'+':'')+away+' bps':(away>0?'+':'−')+(Math.abs(away)/100).toFixed(2)+'%')+'</span><span class="r">'+Math.max(0,Math.ceil((q.exp-now())/1000))+' s</span><button type="button" class="x" data-act="tm-cancel" data-id="'+q.quoteId+'" data-k="qc-'+q.quoteId+'">Cancel</button>'}))
         +'<p class="tl-foot">Each offer sits on Midnight’s board until it’s taken, it ends, or the price moves away from it. Cancel pulls one off; it posts a fresh one within seconds.</p>'
       :none(r.stopped?'No offers: it’s stopped. Sign its rules again to restart it.':r.paused?'No offers while it’s paused.':'No offers open right now. It posts new ones within seconds.');
@@ -2590,9 +2622,10 @@ function renderTabs(id){
         +'<p class="tl-foot">Its rules allow '+lim+' s from a trade to its hedge. Hedging has cost '+money(r.hedgeCost)+' so far: Strike’s taker fee is 0.05% and slippage about 0.03%.</p>'
       :none('No hedges yet. Each trade is hedged on Strike within '+lim+' s.');
   }else if(TM.tab==='position'){
-    const b=bk(id),up=b.pos?(S.mark-b.avg)*b.pos:0,open=qs.length;
-    h='<div class="tm-pos"><div><h3>On Strike · BTC-USD</h3><div class="rkv">'+kv('Position',b.pos?(b.pos>0?'Long ':'Short ')+Math.abs(b.pos).toFixed(5)+' BTC':'none')+kv('Entry, on average',b.pos?usdPx(b.avg):'–')+kv('Mark',usdPx(S.mark))+kv('Unrealised','<span style="color:'+(up>=0?'var(--green)':'var(--red)')+'">'+money(up)+'</span>')+kv('Margin in use',money(marginOf(id))+' at '+a.mandate.maxLeverage+'×')+'</div></div>'
-      +'<div><h3>On Midnight · shielded</h3><div class="rkv">'+kv('tBTC',(b.inv0+b.inv).toFixed(5))+kv('tUSD',(b.cash0+b.cash).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}))+kv('Offers open',String(open))+kv('Others can see','the prices, not the maker')+kv('Uncovered right now',money(Math.abs(r.unhedged*S.mark),0))+'</div></div></div>'
+    const b=bk(id),mq=markOfA(id),mk=MKT[mktOf(id)]||MKT['BTC-USD'],up=b.pos?(mq-b.avg)*b.pos:0,open=qs.length;
+    h='<div class="tm-pos"><div><h3>On Strike · '+mktOf(id)+'</h3><div class="rkv">'+kv('Position',b.pos?(b.pos>0?'Long ':'Short ')+Math.abs(b.pos).toFixed(5)+' '+mk.base:'none')+kv('Entry, on average',b.pos?usdPx(b.avg):'–')+kv('Mark',usdPx(mq))+kv('Unrealised','<span style="color:'+(up>=0?'var(--green)':'var(--red)')+'">'+money(up)+'</span>')+kv('Margin in use',money(marginOf(id))+' at '+a.mandate.maxLeverage+'×')+'</div></div>'
+      +(a.markets||[]).slice(1).map(sym=>{const L=(a.legs||{})[sym]||{},M=MKT[sym]||MKT['BTC-USD'],pos=L.strikePositionBtc||0;return '<div><h3>On Strike · '+sym+'</h3><div class="rkv">'+kv('Position',pos?(pos>0?'Long ':'Short ')+Math.abs(pos).toFixed(5)+' '+M.base:'none')+kv('Mark',L.mark?usdPx(L.mark):'–')+kv('Net delta',money(L.netDeltaUsd||0))+kv('Uncovered right now',money(Math.abs(L.unhedgedUsd||0),0))+kv('Offers open',String(L.openQuotes||0))+'</div></div>'}).join('')
+      +'<div><h3>On Midnight · shielded</h3><div class="rkv">'+kv(mk.token,(b.inv0+b.inv).toFixed(5))+(a.markets||[]).slice(1).map(sym=>{const M=MKT[sym]||{},bases=(a.midnight&&a.midnight.bases)||{};return kv(M.token||sym,Number(bases[M.pair]||0).toFixed(M.pair==='tADA/tUSD'?2:5))}).join('')+kv('tUSD',(b.cash0+b.cash).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}))+kv('Offers open',String(open))+kv('Others can see','the prices, not the maker')+kv('Uncovered right now',money(Math.abs(r.unhedged*S.mark),0))+'</div></div></div>'
       +'<div class="tm-posb"><button type="button" class="btn sm" data-act="tm-close" data-k="tm-close"'+(b.pos?'':' disabled')+'>Close the Strike position</button><span class="t4 small">Reduce-only, through the gateway. Always allowed, even when it’s frozen.</span></div>';
   }else if(TM.tab==='decisions'){
     h=ds.length?ds.slice(0,10).map(d=>{const claude=a.mind==='claude'&&a.type==='mm',c=d.action==='midnight.take'?'var(--green)':'var(--cyan)';
@@ -2627,7 +2660,7 @@ function ruleErrors(D){
 function renderRules(){
   const id=TM.agent,a=AG[id],D=draftOf(id),S0=savedOf(id),b=bk(id);TM.rulesFor=id;TM.rulesMode=P.mode;
   const field=f=>'<div class="rf'+(D[f[0]]!==S0[f[0]]?' dirty':'')+'"><label for="rf-'+f[0]+'">'+f[1]+(pro()?'<small>'+(FIELD[f[0]]||f[0])+'</small>':'')+'</label><span class="in"><input type="number" id="rf-'+f[0]+'" data-tf="'+f[0]+'" data-k="rf-'+f[0]+'" min="0" step="'+f[3]+'" value="'+D[f[0]]+'" inputmode="decimal">'+(f[2]?'<span class="u">'+f[2]+'</span>':'')+'</span></div>';
-  let h='<div class="rmk"><span class="chip" style="--c:var(--orange)">BTC-USD on Strike</span><span class="chip" style="--c:var(--cyan)">tBTC/tUSD on Midnight</span></div>';
+  let h='<div class="rmk">'+(AG[id].markets||[mktOf(id)]).map(sym=>'<span class="chip" style="--c:var(--orange)">'+sym+' on Strike</span><span class="chip" style="--c:var(--cyan)">'+(MKT[sym]||MKT['BTC-USD']).pair+' on Midnight</span>').join('')+'</div>';
   RF.forEach(g=>{h+='<div class="rgrp"><h3 style="--c:'+g[1]+'"><i></i>'+g[0]+'</h3>'+g[2].map(field).join('')+'</div>'});
   h+='<div class="rgrp"><h3 style="--c:var(--red)"><i></i>'+(pro()?'onBreach':'On a breach')+'</h3><div class="seg" role="group" aria-label="On a breach"><span class="thumb" aria-hidden="true"></span><button type="button" data-act="tm-breach" data-v="block" data-k="br-block" aria-pressed="'+(D.onBreach==='block')+'">Refuse the action</button><button type="button" data-act="tm-breach" data-v="freeze" data-k="br-freeze" aria-pressed="'+(D.onBreach==='freeze')+'">Freeze the agent</button></div></div>';
   h+='<div id="tm-rules-err"></div><div class="rkv">'+kv(pro()?'mandate hash':'Fingerprint','<span id="tm-fp"></span>')+kv('Locked on Midnight',ago(b.signedAt))+kv('Expires in',hms(b.expires-now()))+kv('Builder fee',a.mine?'0.05% of each hedge':'none, it’s ours')+kv('Keeps of each $1,000, at its closest','<span id="tm-keep"></span>')+'</div>';
@@ -2694,13 +2727,13 @@ function drawTerm(ts,dt){
     tagAt(ey,money(cur),TK.ink,TK.surface);return;
   }
   const span=120000,X=t=>padL+(w-padL-padR)*(1-(T-t)/span);
-  const k=P.motion?1-Math.exp(-dt/260):1;TC.shown=TC.shown==null?S.mark:TC.shown+(S.mark-TC.shown)*k;
-  const pts=S.hist.filter(p=>p.t>=T-span-4000).map(p=>[X(p.t),p.p]);pts.push([X(T),TC.shown]);
+  const k=P.motion?1-Math.exp(-dt/260):1,mkA=markOfA(id),hsA=histOfA(id);TC.shown=TC.shown==null?mkA:TC.shown+(mkA-TC.shown)*k;
+  const pts=hsA.filter(p=>p.t>=T-span-4000).map(p=>[X(p.t),p.p]);pts.push([X(T),TC.shown]);
   const qs=[...S.quotes.values()].filter(q=>q.agentId===id),trs=S.trades.filter(t=>(t.maker===id||t.taker===id)&&T-t.takenAt<=span),hs=S.trades.filter(t=>t.maker===id&&t.hedge&&t.hedge.how==='market'&&T-t.hedge.at<=span);
   let lo=Infinity,hi=-Infinity;pts.forEach(p=>{lo=Math.min(lo,p[1]);hi=Math.max(hi,p[1])});qs.forEach(q=>{lo=Math.min(lo,q.price);hi=Math.max(hi,q.price)});
-  const pad=(hi-lo)*.1+4;lo-=pad;hi+=pad;TC.lo=TC.lo==null?lo:TC.lo+(lo-TC.lo)*kr;TC.hi=TC.hi==null?hi:TC.hi+(hi-TC.hi)*kr;
+  const pad=(hi-lo)*.1+(hi+lo)*2.5e-5;lo-=pad;hi+=pad;TC.lo=TC.lo==null?lo:TC.lo+(lo-TC.lo)*kr;TC.hi=TC.hi==null?hi:TC.hi+(hi-TC.hi)*kr;
   const Y=v=>padT+(h-padT-padB)*(1-(v-TC.lo)/(TC.hi-TC.lo)),step=niceStep((TC.hi-TC.lo)/3);
-  for(let v=Math.ceil(TC.lo/step)*step;v<TC.hi;v+=step){const yy=Math.round(Y(v))+.5;x.strokeStyle=rgba(TK.grid,.07);x.lineWidth=1;x.beginPath();x.moveTo(padL,yy);x.lineTo(w-padR+4,yy);x.stroke();x.fillStyle=TK.t4;x.fillText(v.toLocaleString('en-US'),padL+2,yy-3)}
+  for(let v=Math.ceil(TC.lo/step)*step;v<TC.hi;v+=step){const yy=Math.round(Y(v))+.5;x.strokeStyle=rgba(TK.grid,.07);x.lineWidth=1;x.beginPath();x.moveTo(padL,yy);x.lineTo(w-padR+4,yy);x.stroke();x.fillStyle=TK.t4;x.fillText(v.toLocaleString('en-US',{maximumFractionDigits:Math.max(0,Math.ceil(-Math.log10(step)-1e-9))}),padL+2,yy-3)}
   x.setLineDash([3,4]);qs.forEach(q=>{const yy=Math.round(Y(q.price))+.5;x.strokeStyle=rgba(q.side==='ask'?TK.red:TK.green,.75);x.lineWidth=1.2;x.beginPath();x.moveTo(padL,yy);x.lineTo(w-padR+4,yy);x.stroke()});x.setLineDash([]);
   qs.forEach(q=>{x.fillStyle=q.side==='ask'?TK.red:TK.green;x.beginPath();x.arc(w-padR+4,Y(q.price),2.8,0,7);x.fill()});
   const line=new Path2D();line.moveTo(pts[0][0],Y(pts[0][1]));
@@ -2806,13 +2839,23 @@ function wdHtml(){
 function renderMoney(id){
   const host=$('#tm-money-b');if(!host)return;const a=AG[id];
   if(!LIVE){WD.agent=id;paint(host,'<div class="rkv">'+kv('On Strike',money(eqOf(id)))+kv('In use',money(marginOf(id)))+kv('Free',money(eqOf(id)-marginOf(id)))+'</div>'+wdHtml().replace(/^[\s\S]*?<div class="cb">/,'<div class="cb">'));return}
-  const eq=a.strikeEquity!=null?a.strikeEquity:null,list=PAYOUTS[id]||[],busy=list.some(x=>x.status==='running');
-  const row=x=>{const cur=(x.steps||[]).find(y=>y.status!=='done'),st=x.status==='done'?'<span style="color:var(--green)">paid out</span>':x.status==='failed'?'<span style="color:var(--red)">stopped</span>':'<span style="color:var(--yellow)">on its way</span>';return '<div class="tl" style="grid-template-columns:90px minmax(0,1fr) 110px"><span>'+(x.usd==='all'?'all':money(Number(x.usd)))+'</span><span class="t4 small">'+esc(x.status==='done'?(x.paidOut?(Number(x.paidOut)/1e6).toFixed(2)+' tADA to your wallet':'done'):cur?(cur.detail||cur.step):x.error||'')+(x.txHash?' · <a href="https://preprod.cexplorer.io/tx/'+esc(x.txHash)+'" target="_blank" rel="noopener">tx</a>':'')+'</span>'+st+'</div>'};
-  paint(host,'<div class="rkv">'+kv('On its Strike account',eq==null?'–':money(eq))+kv('Earned this run',money(netOf(id)))+kv('Pays out to','<span class="mono">'+esc(short(W.addr))+'</span>')+'</div>'
+  const eq=a.strikeEquity!=null?a.strikeEquity:null,list=PAYOUTS[id]||[],deps=DEPOSITS[id]||[],room=ROOM[id]||null,busy=list.some(x=>x.status==='running'),depBusy=deps.some(x=>x.status==='running')||MN.depositing;
+  const G='90px minmax(0,1fr) 110px';
+  const stamp=x=>x.status==='done'?'<span style="color:var(--green)">'+(x.kind==='deposit'?'credited':'paid out')+'</span>':x.status==='failed'?'<span style="color:var(--red)">stopped</span>':'<span style="color:var(--yellow)">on its way</span>';
+  const where=x=>{const cur=(x.steps||[]).find(y=>y.status!=='done');return esc(x.status==='done'?(x.paidOut?(Number(x.paidOut)/1e6).toFixed(2)+' tADA to your wallet':x.creditedUsd!=null?money(x.creditedUsd)+' credited on Strike':'done'):cur?(cur.detail||cur.step):x.error||'')+(x.txHash?' · <a href="https://preprod.cexplorer.io/tx/'+esc(x.txHash)+'" target="_blank" rel="noopener">tx</a>':'')};
+  const row=x=>'<div class="tl" style="grid-template-columns:'+G+'"><span>'+(x.usd==='all'?'all':money(Number(x.usd)))+(x.cappedFromUsd?' <span class="t4">of '+(x.askedUsd==='all'?'all':money(Number(x.cappedFromUsd)))+'</span>':'')+'</span><span class="t4 small">'+where(x)+'</span><span>'+stamp(x)+(x.status==='failed'?' <button type="button" class="x" data-act="mn-retry" data-k="mn-retry">Retry</button>':'')+'</span></div>';
+  const drow=x=>'<div class="tl" style="grid-template-columns:'+G+'"><span>'+(Number(x.depositLovelace||0)/1e6).toFixed(0)+' tADA</span><span class="t4 small">'+where(x)+'</span><span>'+stamp(x)+(x.status==='failed'?' <button type="button" class="x" data-act="mn-dep-retry" data-k="mn-dep-retry">Retry</button>':'')+'</span></div>';
+  const inv=a.midnight&&a.midnight.btc?a.midnight.btc:0,pos=a.strikePos||0,holds=Math.abs(inv)*S.mark>5||Math.abs(pos)*S.mark>5;
+  const limit=room&&room.hour?'Strike allows '+room.hour.limitAda+' ADA an hour and '+room.day.limitAda+' a day; '+room.hour.remainingAda.toFixed(0)+' ADA are left this hour.':'';
+  paint(host,'<div class="rkv">'+kv('On its Strike account',eq==null?'–':money(eq))+kv('Can go now',room?money(room.nowUsd)+(room.limitUsd!=null&&room.limitUsd<room.availableUsd?' <span class="t4">of '+money(room.availableUsd)+' free</span>':''):'–')+kv('Earned this run',money(netOf(id)))+kv('Pays out to','<span class="mono">'+esc(short(W.addr))+'</span>')+'</div>'
     +'<div class="cx-f"><div class="field"><label for="mn-usd">Pay out (USD)</label><input type="number" id="mn-usd" min="1" step="1" value="'+MN.usd+'"'+(busy?' disabled':'')+'></div></div>'
-    +'<div class="trow"><button type="button" class="btn primary" data-act="mn-payout" data-k="mn-payout"'+(busy||a.rt.stopped?'':'')+(busy?' disabled':'')+'>Pay out</button><button type="button" class="btn" data-act="mn-payout-all" data-k="mn-all"'+(busy?' disabled':'')+'>Pay out everything</button></div>'
-    +'<p class="t4 small" style="margin:0">Strike pays to the agent’s own wallet; the gateway passes it on to yours. A payout takes a few minutes; large ones wait for Strike’s validators. Pause or stop the agent first if you want all of it: open positions keep margin in use.</p>'
-    +(list.length?'<div class="tm-list" style="min-height:0;margin-top:10px"><div class="tl hd" style="grid-template-columns:90px minmax(0,1fr) 110px"><span>Amount</span><span>Where it is</span><span>Status</span></div>'+list.slice(0,6).map(row).join('')+'</div>':''));
+    +'<div class="trow"><button type="button" class="btn primary" data-act="mn-payout" data-k="mn-payout"'+(busy?' disabled':'')+'>Pay out</button><button type="button" class="btn" data-act="mn-payout-all" data-k="mn-all"'+(busy?' disabled':'')+'>Pay out everything</button>'+(a.rt.stopped&&holds?'<button type="button" class="btn" data-act="mn-unwind" data-k="mn-unwind">Unwind</button>':'')+'</div>'
+    +'<p class="t4 small" style="margin:0">Strike pays to the agent’s own wallet; the gateway passes it on to yours. '+limit+' A payout above that is capped and the rest can follow later. '+(a.rt.unwinding?'It is unwinding: selling its inventory down and closing its hedge; then everything can go.':a.rt.stopped&&holds?'It still holds inventory and a hedge, which keep margin in use: Unwind sells the inventory down and closes the hedge.':'Open positions keep margin in use: stop and unwind the agent first if you want all of it.')+'</p>'
+    +(list.length?'<div class="tm-list" style="min-height:0;margin-top:10px"><div class="tl hd" style="grid-template-columns:'+G+'"><span>Payout</span><span>Where it is</span><span>Status</span></div>'+list.slice(0,6).map(row).join('')+'</div>':'')
+    +'<div class="cx-f" style="margin-top:12px"><div class="field"><label for="mn-ada">Add money (tADA)</label><input type="number" id="mn-ada" min="'+(ORDERS&&ORDERS.minTopUpAda||50)+'" step="10" value="'+MN.ada+'"'+(depBusy?' disabled':'')+'></div></div>'
+    +'<div class="trow"><button type="button" class="btn" data-act="mn-deposit" data-k="mn-deposit"'+(depBusy?' disabled':'')+'>'+(MN.depositing?'Sign in your wallet…':'Deposit')+'</button></div>'
+    +'<p class="t4 small" style="margin:0">One transaction from your wallet to the agent’s own, plus 5 tADA for its fees; the agent puts it on Strike itself and the credit shows here within minutes.</p>'
+    +(deps.length?'<div class="tm-list" style="min-height:0;margin-top:10px"><div class="tl hd" style="grid-template-columns:'+G+'"><span>Deposit</span><span>Where it is</span><span>Status</span></div>'+deps.slice(0,4).map(drow).join('')+'</div>':''));
 }
 /* keys and addresses */
 function renderKeys(){
@@ -2820,7 +2863,7 @@ function renderKeys(){
   const nm=id=>'<span class="mk">'+face(id,22)+'<b>'+esc(nameOf(id))+'</b></span>';
   const keyCell=id=>{if(!LIVE)return '<span class="t4">open</span>';const k=KEYS[id];return (k?'<span class="t4">'+esc(k.prefix)+'… · '+ago(Date.parse(k.issuedAt))+'</span>':'<span class="t4">open, no key</span>')+'<span style="display:flex;gap:6px"><button type="button" class="x" data-act="k-issue" data-agent="'+id+'" data-k="ki-'+id+'">'+(k?'New key':'Issue key')+'</button>'+(k?'<button type="button" class="x" data-act="k-revoke" data-agent="'+id+'" data-k="kv-'+id+'">Revoke</button>':'')+'</span>'};
   paint($('#cx-keys'),'<section class="card">'+ch('var(--pink)','route','Tools addresses','where its mind connects','cx-keys')+tbl('minmax(150px,1fr) minmax(250px,1.7fr) 90px minmax(170px,1fr) 150px','<span>Agent</span><span>Address</span><span>Mind</span><span>Tools key</span><span></span>',OWN.map(id=>{const a=AG[id];return nm(id)+'<span>'+esc(GATE+id)+'</span><span>'+(a.mind==='claude'?'Claude':'rules')+'</span>'+keyCell(id)}),720)+(LIVE?'<div class="cb" style="padding-top:4px"><p class="t4 small" style="margin:0">Without a key an agent’s tools address is open and each paid call costs x402. With a key only its holder may call it; the key is shown once when issued.</p></div>':'')+'</section>'
-    +'<section class="card">'+ch('var(--orange)','lock','Strike keys','held by the gateway, never by the agent','')+tbl('minmax(150px,1fr) 128px minmax(150px,1.2fr) 92px 104px 84px','<span>Agent</span><span>Account</span><span>Key</span><span>Can</span><span>Rotates</span><span></span>',OWN.map(id=>{const b=bk(id);return nm(id)+'<span class="t4">'+b.sub+'</span><span>ed25519 · '+short(b.key)+'</span><span style="color:var(--green)">trade only</span><span class="t4">in '+b.rot+' days</span><button type="button" class="x" data-act="k-rotate" data-agent="'+id+'" data-k="kr-'+id+'">Rotate</button>'}),720)+'</section>'
+    +'<section class="card">'+ch('var(--orange)','lock','Strike keys','held by the gateway, never by the agent','')+tbl('minmax(150px,1fr) 128px minmax(150px,1.2fr) 92px 104px 84px','<span>Agent</span><span>Account</span><span>Key</span><span>Can</span><span>Rotates</span><span></span>',OWN.map(id=>{const b=bk(id),k=LIVE?SKEYS[id]:null;if(LIVE&&!k)return nm(id)+'<span class="t4">shared key</span><span class="t4">no account of its own</span><span></span><span></span><span></span>';return nm(id)+'<span class="t4">'+(k?esc(String(k.accountId).slice(0,8))+'…':b.sub)+'</span><span>ed25519 · '+short(k?k.publicKey:b.key)+'</span><span style="color:var(--green)">trade only</span><span class="t4">'+(k?(k.connectedAt?'since '+ago(Date.parse(k.connectedAt)):'')+'':'in '+b.rot+' days')+'</span><button type="button" class="x" data-act="k-rotate" data-agent="'+id+'" data-k="kr-'+id+'">Rotate</button>'}),720)+'</section>'
     +'<section class="card">'+ch('var(--green)','proof','Wallets and proofs','','')+tbl('minmax(150px,1fr) minmax(200px,1.5fr) 100px minmax(140px,1fr)','<span>Agent</span><span>Cardano</span><span>Midnight</span><span>Attester id</span>',OWN.map(id=>{const a=AG[id];return nm(id)+'<span>'+esc(a.cardano)+'</span><span class="t4">shielded</span><span>'+short(a.attester)+'</span>'}),640)+'<div class="cb" style="padding-top:4px"><p class="t4 small" style="margin:0">Owner tools (set_mandate, kill and resume) are never among an agent’s tools. They live here, behind your wallet. Anyone can check an agent’s proofs with its attester id.</p></div></section>');
 }
 
@@ -2847,7 +2890,7 @@ function setView(v,sec){
   else{chartSize();layoutRail()}
   thumbs();window.scrollTo({top:0});
 }
-function setMode(m){P.mode=m==='pro'?'pro':'simple';document.body.setAttribute('data-mode',P.mode);$('#md-simple').setAttribute('aria-pressed',String(!pro()));$('#md-pro').setAttribute('aria-pressed',String(pro()));thumbs();save();renderAll();if(VIEW==='console')renderConsole();}
+function setMode(m){P.mode=m==='pro'?'pro':'simple';document.body.setAttribute('data-mode',P.mode);thumbs();save();renderAll();if(VIEW==='console')renderConsole();}
 function frame(ts){
   const dt=lastT?Math.min(100,ts-lastT):16;lastT=ts;
   try{
@@ -2878,7 +2921,7 @@ function goLive(){
 /* ---------------------------------------------------------------- help for the new parts */
 Object.assign(HELP,{
   'tm-bar':{t:'Your agent at a glance',what:'One of your agents and how it’s doing right now. Pick another from its name.',how:['Equity is its Strike deposit plus what it kept from spreads after paying for hedges.','At risk is what a move in Bitcoin’s price would cost it right now. The limit is the one you signed.','Checked counts every action the gateway checked for it. Refused counts the ones it stopped.','Pause stops new offers and keeps its hedges. Stop agent pulls its offers and holds it until you sign its rules again.'],why:'One line tells you whether it’s earning, covered and inside its rules.'},
-  'tm-chart':{t:'Price and earnings',what:'Strike’s Bitcoin price with this agent’s own offers, trades and hedges on it. Switch to Earnings to see what it has kept.',how:['Dashed lines are its open offers: red sells, green buys.','Cyan dots are its private trades on Midnight. Orange diamonds are its hedges on Strike.','Earnings is what it kept from spreads after hedging, this run.'],why:'You can see each trade and the hedge that covered it.'},
+  'tm-chart':{t:'Price and earnings',what:'Strike’s price on this agent’s market with its own offers, trades and hedges on it. Switch to Earnings to see what it has kept.',how:['Dashed lines are its open offers: red sells, green buys.','Cyan dots are its private trades on Midnight. Orange diamonds are its hedges on Strike.','Earnings is what it kept from spreads after hedging, this run.'],why:'You can see each trade and the hedge that covered it.'},
   'tm-act':{t:'Activity',what:'Everything this agent did, one list at a time.',how:['Offers are open on Midnight now. Cancel pulls one off the board.','Trades are its private trades. Hedges are the Strike orders that covered them.','Position is what it holds on Strike and on Midnight.','Decisions, refusals and proofs are the same records the Arena shows, for this agent only.'],why:'It’s the record to check before you change its rules.'},
   'tm-rules':{t:'Its rules',what:'The limits you signed for this agent. The gateway checks every action against them before anything reaches a market.',how:['Change a number, then sign. Your wallet signs a fingerprint of the new rules, and Midnight keeps it.','Until you sign, the agent keeps running on the rules it has.','The agent can read its rules with get_mandate, but only your wallet can change them.'],why:'You can tighten an agent in seconds, and the proofs show which rules were in force when.'},
   'cx-tools':{t:'Its tools',what:'What an outside mind can do through the gateway, as one of your agents.',how:['Reads are free. Actions that touch a market are paid per call, with x402 on Cardano preprod.','Every call meets the same checks as our agents’ calls, under the rules you signed.','Owner tools, such as changing its rules or stopping it, aren’t among them.'],why:'Bring any mind you like. The rules and the proofs stay the same.'},
@@ -2902,6 +2945,7 @@ document.addEventListener('click',e=>{
     case 'tm-menu':TM.menu=!TM.menu;TM.pickKey='';renderTerm();break;
     case 'tm-pick':TM.agent=b.dataset.agent;TM.menu=false;TM.pickKey='';TC.lo=TC.hi=null;renderTerm();renderRules();break;
     case 'tm-tab':TM.tab=b.dataset.tab;renderTabs(id);break;
+    case 'market':setMarket(b.dataset.m);break;
     case 'tm-chart':TM.chart=b.dataset.c;$('#tc-price').setAttribute('aria-pressed',String(TM.chart==='price'));$('#tc-earn').setAttribute('aria-pressed',String(TM.chart==='earn'));thumbs();termLegend();renderTerm();break;
     case 'tm-cancel':if(LIVE){toast('Live, an offer comes off the board when the agent requotes or when you pause it.');break}S.quotes.delete(b.dataset.id);renderBook();renderTabs(id);toast('Offer pulled from the board (demo)');break;
     case 'tm-close':if(LIVE){LV.close(id).then(r=>toast(r&&r.closed===0?a.name+' has no Strike position to close.':'Close-only order for '+a.name+' sent to Strike through the gateway.')).catch(err=>toast(err.message));break}toast('Close-only order for '+a.name+' sent to Strike through the gateway (demo)');break;
@@ -2918,7 +2962,7 @@ document.addEventListener('click',e=>{
     case 'cn-copy':{const t=b.dataset.v;try{navigator.clipboard.writeText(t).then(()=>toast('Address copied'),()=>toast('Copying is blocked here. Select the address instead.'))}catch(err){toast('Copying is blocked here. Select the address instead.')}break}
     case 'cn-test':CN.tested=1;renderConnect();if(LIVE){LV.testing={agent:CN.agent,since:now()};break}setTimeout(()=>{if(CN.tested===1){CN.tested=2;if(VIEW==='console'&&CX.sec==='connect')renderConnect()}},P.motion?1500:60);break;
     case 'cn-pay':{if(LIVE){LV.paidBefore=S.revenue.calls;toast('Send one paid call from your agent now; it shows here and under Paid calls when it lands.');break}const m=MINDS.find(x=>x[0]===CN.mind)||MINDS[0];paidFrom(m[1]);CN.tested=3;renderConnect();toast(m[1]+' paid 1 tADA for one post_quote.');break}
-    case 'cn-see':setView('arena');setTimeout(()=>$('#paid').scrollIntoView({block:'center',behavior:P.motion?'smooth':'auto'}),80);break;
+    case 'cn-see':setView('arena');setTimeout(()=>$('#talk').scrollIntoView({block:'center',behavior:P.motion?'smooth':'auto'}),80);break;
     case 'cn-again':CN.step=1;CN.tested=0;renderConnect();break;
     case 'dp-go':{if(LIVE){toast('Deposits from this page are not live yet.');break}if(DP.busy)break;DP.busy=true;DP.hops=0;paint($('#cxf-dep'),depHtml());const ag=DP.agent,amt=DP.amt;
       [1,2,3].forEach(k=>setTimeout(()=>{DP.hops=k;if(k===3){DP.busy=false;AG[ag].equity0+=amt*.227306;toast(amt.toLocaleString('en-US')+' tADA deposited into '+nameOf(ag)+'’s Strike account'+(LIVE?' (demo: deposits from the page are not live yet; the agents were funded by the treasury)':' (demo)'))}const el=$('#cxf-dep');if(el&&VIEW==='console'&&CX.sec==='funds')paint(el,depHtml())},P.motion?k*900:k*40));break}
@@ -2928,9 +2972,13 @@ document.addEventListener('click',e=>{
     case 'wd-sign':if(LIVE){toast('Withdrawals from this page are not live yet.');break}WD.step=2;AG[WD.agent].equity0-=WD.usd;paint($('#cxf-wd'),wdHtml());toast(money(WD.usd)+' withdrawn from '+nameOf(WD.agent)+'’s Strike account'+(LIVE?' (demo: withdrawals from the page are not live yet)':' (demo)'));break;
     case 'wd-new':WD.step=0;paint($('#cxf-wd'),wdHtml());break;
     case 'mn-payout':case 'mn-payout-all':{if(!LIVE||MN.busy)break;const all=b.dataset.act==='mn-payout-all',usd=all?'all':Number(($('#mn-usd')||{}).value||MN.usd);if(!all&&!(usd>0)){toast('Enter an amount first');break}MN.busy=true;LV.withdraw(id,usd).then(r=>{MN.busy=false;toast('Payout requested: '+(all?'everything':money(usd))+' from '+nameOf(id)+'. Watch it under Its money.');return LV.withdrawals(id)}).then(()=>renderMoney(id)).catch(err=>{MN.busy=false;toast(String(err.message||err).slice(0,200))});break}
+    case 'mn-retry':{if(!LIVE)break;LV.retryWithdraw(id).then(()=>LV.withdrawals(id)).then(()=>{renderMoney(id);toast('Payout retried from the step that failed.')}).catch(err=>toast(String(err.message||err).slice(0,200)));break}
+    case 'mn-dep-retry':{if(!LIVE)break;LV.retryDeposit(id).then(()=>LV.deposits(id)).then(()=>{renderMoney(id);toast('Deposit retried from the step that failed.')}).catch(err=>toast(String(err.message||err).slice(0,200)));break}
+    case 'mn-deposit':{if(!LIVE||MN.depositing)break;const ada=Number(($('#mn-ada')||{}).value||MN.ada);if(!(ada>0)){toast('Enter an amount first');break}MN.ada=ada;MN.depositing=true;renderMoney(id);LV.deposit(id,ada).then(r=>{MN.depositing=false;toast('Deposit sent: tx '+short(r.txHash)+'. The agent puts it on Strike once it is on the chain.');return LV.deposits(id)}).then(()=>renderMoney(id)).catch(err=>{MN.depositing=false;renderMoney(id);toast(String(err.message||err).slice(0,200))});break}
+    case 'mn-unwind':{if(!LIVE)break;LV.unwind(id).then(r=>{a.rt.unwinding=true;a.rt.stopped=false;a.rt.status='unwinding';renderAll();renderTerm();renderMoney(id);toast(nameOf(id)+' is unwinding: '+money(r.inventoryUsd||0)+' of inventory to sell, then its hedge closes and it is stopped.')}).catch(err=>toast(String(err.message||err).slice(0,200)));break}
     case 'k-issue':{if(!LIVE)break;const ag=b.dataset.agent;LV.key(ag).then(r=>{KEYS[ag]={prefix:r.prefix,issuedAt:r.issuedAt};renderKeys();openModal('<div class="pk">Tools key</div><h3 id="md-t">'+esc(nameOf(ag))+'</h3><p>Shown once. An outside mind sends it as <span class="mono">Authorization: Bearer</span> to '+esc(GATE+ag)+'.</p><div class="hash set">'+esc(r.key)+'</div><div class="trow"><button type="button" class="btn" data-act="m-close">Close</button></div>','var(--pink)')}).catch(err=>toast(String(err.message||err).slice(0,200)));break}
     case 'k-revoke':{if(!LIVE)break;const ag=b.dataset.agent;LV.revokeKey(ag).then(()=>{KEYS[ag]=null;renderKeys();toast(nameOf(ag)+'’s tools address is open again.')}).catch(err=>toast(String(err.message||err).slice(0,160)));break}
-    case 'k-rotate':{if(LIVE){toast('Key rotation from this page is not live yet.');break}const k=bk(b.dataset.agent);k.key=hex(12);k.rot=90;renderKeys();toast('New Strike key for '+nameOf(b.dataset.agent)+'; the old one is revoked'+(LIVE?' (demo: key rotation from the page is not live yet)':' (demo)'));break}
+    case 'k-rotate':{if(LIVE){const ag=b.dataset.agent;b.disabled=true;LV.rotateStrike(ag).then(r=>{SKEYS[ag]={accountId:r.accountId,publicKey:r.publicKey,connectedAt:r.connectedAt};renderKeys();toast('New Strike key for '+nameOf(ag)+'. Strike revoked the old one; the running agent is on the new key.')}).catch(err=>{b.disabled=false;toast(String(err.message||err).slice(0,200))});break}const k=bk(b.dataset.agent);k.key=hex(12);k.rot=90;renderKeys();toast('New Strike key for '+nameOf(b.dataset.agent)+'; the old one is revoked'+(LIVE?' (demo: key rotation from the page is not live yet)':' (demo)'));break}
   }
 });
 document.addEventListener('input',e=>{

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { registry, loadSignedMandate, saveSignedMandate } from "../gateway/registry.mjs";
+import { registry, loadSignedMandate, orderIndexes, saveSignedMandate } from "../gateway/registry.mjs";
 import { cardanoWallet, signData } from "../gateway/cardano.mjs";
 import { mandateHash } from "../gateway/mandate.mjs";
 import { profiles } from "../agents/profiles.mjs";
@@ -27,6 +27,21 @@ test("the registry: empty at first, the next index comes after the built-ins and
   assert.equal(r.nextIndex([]), 6, "a registered index is never handed out again");
   assert.throws(() => r.add({ agentId: "nova-7", index: 7 }), /already registered/);
   assert.throws(() => r.add({ agentId: "other", index: 5 }), /index 5 is taken/);
+});
+
+test("saved orders reserve their wallet index, finished or failed, so the next order never inherits a wallet", () => {
+  const dir = tmp();
+  assert.deepEqual(orderIndexes(path.join(dir, "none")), [], "no orders yet");
+  const jobs = path.join(dir, "onboard");
+  fs.mkdirSync(jobs);
+  fs.writeFileSync(path.join(jobs, "nova-63.json"), JSON.stringify({ agentId: "nova-63", index: 7, status: "failed" }));
+  fs.writeFileSync(path.join(jobs, "nova-7.json"), JSON.stringify({ agentId: "nova-7", index: 6, status: "done" }));
+  fs.writeFileSync(path.join(jobs, "broken.json"), "{not json");
+  fs.writeFileSync(path.join(jobs, "notes.txt"), "7");
+  assert.deepEqual(orderIndexes(jobs).sort(), [6, 7]);
+  const r = registry(path.join(dir, "agents.json"));
+  r.add({ agentId: "nova-7", index: 6 });
+  assert.equal(r.nextIndex([0, 1, 2, 3, 4, ...orderIndexes(jobs)]), 8, "nova-63 never registered, its wallet 7 stays reserved");
 });
 
 test("a signed mandate file loads when signature, owner and expiry hold, and says why when not", () => {

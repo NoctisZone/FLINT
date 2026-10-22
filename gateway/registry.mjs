@@ -10,6 +10,17 @@ import { mandateHash } from "./mandate.mjs";
 
 export const REGISTRY_FILE = path.join("data", "agents.json");
 export const MANDATE_DIR = path.join("data", "mandates");
+export const ONBOARD_DIR = path.join("data", "onboard");
+
+/** The wallet indexes of saved orders, finished or not: an order that failed before it registered keeps its wallet. */
+export function orderIndexes(dir = ONBOARD_DIR) {
+  if (!fs.existsSync(dir)) return [];
+  const out = [];
+  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith(".json"))) {
+    try { const i = JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")).index; if (Number.isInteger(i)) out.push(i); } catch { /* an unreadable job file reserves nothing */ }
+  }
+  return out;
+}
 
 /**
  * @typedef {object} RegistryEntry
@@ -39,7 +50,7 @@ export function registry(file = REGISTRY_FILE) {
       write(all);
       return entry;
     },
-    /** The first wallet index after the built-ins (`reserved`) and every registered agent. */
+    /** The first wallet index after `reserved` (the built-ins, saved orders) and every registered agent. */
     nextIndex(reserved = []) {
       return Math.max(-1, ...reserved, ...read().map((e) => e.index)) + 1;
     },

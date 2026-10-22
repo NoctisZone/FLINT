@@ -267,3 +267,81 @@ test("a hedge the stream never reports is looked up over REST after ten seconds:
   assert.ok(!log.some((e) => e.kind === "hedge.late"));
   await g.stop();
 });
+
+test("the owner unwinds a stopped maker: it asks exactly its inventory, the citizen takes it, the hedge buys the short back, then it is stopped again with an unwound entry; a stop halts an unwind", async () => {
+  const { venue } = world();
+  const feed = feedState({ runStart: "2026-10-22T12:00:00Z" });
+  const orders = [];
+  let streamOn = null;
+  const strike = {
+    placeOrder: async (o) => { orders.push(o); return { status: "pending" }; },
+    balances: async () => [{ marginBalance: "120" }],
+    positions: async () => ({ positions: [{ symbol: "BTC-USD", size: "-0.00147" }] }),
+    order: async ({ clientOrderId }) => ({ ClientOrderID: clientOrderId, Status: "open", Filled: "0" }),
+    openOrders: async () => ({ count: 0 }),
+  };
+  const agents = [
+    { agentId: "mm-rule", mandate: P["mm-rule"], mind: "maker", venue: venue("mm-rule", { btc: 0.00147, usd: 800, spendable: { btc: 0.00147, usd: 320 } }), strike, stream: (onEvent) => { streamOn = onEvent; return { close() {} }; } },
+    { agentId: "citizen-a", mandate: P["citizen-a"], mind: "citizen", side: "buy", venue: venue("citizen-a", { btc: 0, usd: 500, spendable: { btc: 0, usd: 200 } }) },
+  ];
+  let t = T0;
+  const log = [];
+  // carried from the last run: 0.00147 tBTC hedged by a 0.00147 short
+  const books = { "mm-rule": { midnightInventoryBtc: 0.00147, strikePositionBtc: -0.00147, unhedgedBtc: 0, frozen: false, frozenReason: null } };
+  const g = gateway({ agents, mark: async () => 80_000, feed, log: (e) => { log.push(e); return e; }, now: () => t, rnd: () => 0, books, saveBooks: () => {}, minHedgeUsd: 100 });
+  await g.stop("mm-rule");
+  await g.round();
+  const card = () => feed.get("agents").agents.find((a) => a.agentId === "mm-rule");
+  assert.deepEqual([card().status, feed.get("quotes").quotes.length], ["stopped", 0], "stopped: nothing quoted, the hedge stays");
+  const r = await g.unwind("mm-rule");
+  assert.deepEqual([r.inventoryBtc, r.strikePositionBtc, r.inventoryUsd, card().status], [0.00147, -0.00147, 117.6, "unwinding"]);
+  t += 20_000;
+  await g.round();
+  const asks = feed.get("decisions").decisions.filter((d) => d.agentId === "mm-rule" && d.action === "midnight.quote");
+  assert.deepEqual(asks.map((d) => [d.side, d.sizeBtc]), [["ask", 0.00147]], "one ask, the inventory, no bid");
+  assert.match(asks[0].reason, /unwinding: only the ask that sells the inventory down/);
+  assert.equal(feed.get("quotes").quotes.length, 0, "the citizen took it");
+  t += 20_000;
+  await g.round();
+  assert.deepEqual([orders.length, orders[0].side, orders[0].size], [1, "buy", 0.00147], "the fill's hedge buys the short back");
+  assert.equal(card().status, "unwinding", "a hedge pending: not over yet");
+  streamOn({ kind: "fill", clientOrderId: orders[0].clientOrderId, side: "BUY", size: "0.00147", price: "80010", at: t + 500 });
+  t += 20_000;
+  await g.round();
+  const h = g.hedgerOf("mm-rule").state;
+  assert.deepEqual([h.midnightInventoryBtc, h.strikePositionBtc, h.frozen, h.manual, card().status], [0, 0, true, true, "stopped"], "flat, stopped by hand again");
+  const done = log.find((e) => e.kind === "unwound");
+  assert.deepEqual([done.agent, done.inventoryBtc, done.strikePositionBtc, done.closed], ["mm-rule", 0, 0, "nothing to close"]);
+  t += 20_000;
+  await g.round();
+  assert.equal(feed.get("quotes").quotes.length, 0, "stopped: quotes nothing");
+  // an unwind halted by a stop, and a maker without a hedger cannot unwind
+  const a = agents[0];
+  await g.unwind("mm-rule");
+  assert.equal(a.unwinding, true);
+  await g.stop("mm-rule");
+  assert.deepEqual([a.unwinding, a.stopped, card().status], [false, true, "stopped"]);
+  await assert.rejects(g.unwind("citizen-a"), /no hedger/);
+  await g.stop();
+});
+
+test("a rotated Strike key: the hedger's orders go through the new client, the old stream is closed and a new one opened, the position resynced", async () => {
+  const { venue } = world();
+  const feed = feedState();
+  const placed = { old: 0, fresh: 0 };
+  const closed = [];
+  const mk = (name, size) => ({ placeOrder: async () => { placed[name]++; return { status: "pending" }; }, balances: async () => [{ marginBalance: "100" }], positions: async () => ({ positions: [{ symbol: "BTC-USD", size }] }), order: async () => ({ Status: "open", Filled: "0" }) });
+  const a = { agentId: "mm-rule", mandate: P["mm-rule"], mind: "maker", venue: venue("mm-rule", { btc: 0.01, usd: 800, spendable: { btc: 0.004, usd: 320 } }), strike: mk("old", "0"), stream: () => ({ close() { closed.push("old"); } }) };
+  const log = [];
+  const g = gateway({ agents: [a, { agentId: "citizen-a", mandate: P["citizen-a"], mind: "citizen", side: "buy", venue: venue("citizen-a", { btc: 0, usd: 500, spendable: { btc: 0, usd: 200 } }) }], mark: async () => 80_000, feed, log: (e) => { log.push(e); return e; }, now: () => T0, rnd: () => 0 });
+  let opened = 0;
+  await g.setStrike("mm-rule", { strike: mk("fresh", "-0.0005"), stream: () => { opened++; return { close() { closed.push("fresh"); } }; } });
+  assert.deepEqual([closed, opened, g.hedgerOf("mm-rule").state.strikePositionBtc], [["old"], 1, -0.0005], "old stream closed, new one open, Strike's position taken over");
+  assert.equal(log.at(-1).kind, "strike.rotated");
+  await g.round();
+  await g.round();
+  assert.deepEqual([placed.old, placed.fresh > 0], [0, true], "the hedge after the citizen's take went through the new client");
+  await assert.rejects(g.setStrike("citizen-a", {}), /no hedging agent/);
+  await g.stop();
+  assert.deepEqual(closed, ["old", "fresh"]);
+});

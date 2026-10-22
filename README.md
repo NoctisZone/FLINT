@@ -2,7 +2,7 @@
 
 Private market makers on Midnight, hedged on Strike, inside a mandate their owner signed.
 
-Autonomous agents, each with a Cardano and a Midnight wallet, quote tBTC/tUSD on Midnight's offer board. Every fill is hedged on Strike BTC-USD within seconds. A mandate gateway checks every action against the owner's limits before anything is built, logs every decision in a hash-linked log, and reconciles both venues. Outside agents reach the same tools over MCP and pay per call with x402 on Cardano.
+Autonomous agents, each with a Cardano and a Midnight wallet, quote tBTC/tUSD, tADA/tUSD or tSOL/tUSD on Midnight's offer board. Every fill is hedged on the matching Strike perpetual (BTC-USD, ADA-USD or SOL-USD) within seconds. A mandate gateway checks every action against the owner's limits before anything is built, logs every decision in a hash-linked log, and reconciles both venues. Outside agents reach the same tools over MCP and pay per call with x402 on Cardano.
 
 - Concept: `STRIKE_HACK.MD`
 - Status and feed contract: `STATUS.md`
@@ -31,7 +31,7 @@ A quote is a proven swap half waiting for its taker. By default it waits on the 
 Strike is where every agent hedges. What the gateway does with it:
 
 - **One Strike account per agent**, made by builder connect: the agent's own Cardano wallet signs Strike's challenge, Strike opens the account and an API wallet, the builder fee is set on the account. Deposits go through Strike's quote, build-tx and confirm calls, signed by the agent's wallet; payouts through withdraw quote and confirm, signed the same way, and Strike pays to that wallet.
-- **A hedge on every fill.** A Midnight fill is seen on the offer board; the hedger sends a market order on BTC-USD within a second, inside the mandate's price band. A market order the thin book cannot fill rests as a limit at the edge of the band; a fill on the other side nets the oldest exposure instead of a new order; dust under 5 USD is carried. Sizes are multiples of Strike's step and never under its minimum notional, so every fill can be hedged as is.
+- **A hedge on every fill.** A Midnight fill is seen on the offer board; the hedger sends a market order on the agent's market within a second, inside the mandate's price band. A market order the thin book cannot fill rests as a limit at the edge of the band; a fill on the other side nets the oldest exposure instead of a new order; dust under 5 USD is carried. Sizes are multiples of Strike's step and never under its minimum notional, so every fill can be hedged as is.
 - **The user stream plus REST.** Fills and order states come over Strike's user stream; a pending order the stream has said nothing about for ten seconds is looked up over REST, so a missed message is not a frozen agent. After a reconnect the position Strike reports wins over the books.
 - **The watchdog.** A hedge later than the mandate's `hedgeWithinSec` freezes the agent: it may only quote the side that reduces its delta until nothing is left unhedged.
 - **Leverage and the builder fee** come from the mandate: leverage is set on the account at start, every order carries `X-Builder-Fee-Bps`.
@@ -40,14 +40,14 @@ Strike is where every agent hedges. What the gateway does with it:
 
 ## Risks and honest limits
 
-- tBTC and tUSD are the project's own tokens on Midnight preprod; there is no bridge. The citizens that take quotes are the team's own counterparties.
-- Strike runs on testnet. Its BTC-USD book has no market maker, so `npm run liquidity` quotes both sides from a separate account of ours and the feed says so in `meta.strikeLiquidity`; on mainnet the real book takes that role. No real money moves anywhere.
+- tBTC, tADA, tSOL and tUSD are the project's own tokens on Midnight preprod; there is no bridge. An agent trades the markets chosen when it is ordered, one or all three, with a hedger per market and its limits holding on each; the citizens take on all three. The citizens that take quotes are the team's own counterparties.
+- Strike runs on testnet. Its books have no market maker, so `npm run liquidity` quotes both sides of BTC-USD, ADA-USD and SOL-USD from a separate account of ours and the feed says so in `meta.strikeLiquidity`; on mainnet the real book takes that role. No real money moves anywhere.
 - Between a fill and its hedge there is leg risk. The watchdog bounds it to `hedgeWithinSec` and freezes the agent after that; it does not remove it.
 - The proofs on Midnight cover what the gateway recorded. They hide the numbers, they do not make Strike's data trustless; the reconciler is what ties them to Strike's fill history.
 - The gateway holds the agents' keys: the Strike API wallets, the Cardano wallets, the Midnight wallet state. An owner signs the rules and pays from their own wallet, but trusts the operator with the agent. The agent's Strike key can trade, not withdraw; a payout goes to the wallet Strike registered, the agent's own, and from there to the owner.
-- Strike's testnet pays out at most 100 ADA per asset and hour. A payout above that fails until the limit is respected; the page does not cap it yet.
+- Strike pays out at most a set amount of ADA per asset per hour and per day (100 and 500 on testnet). A larger payout is capped at what is left and the page says when the rest can follow.
 - The slippage settings (2 % band, limits at the band's edge) suit an empty testnet book. On mainnet a 25 bps maker needs slippage under half its spread and maker orders first.
-- A stopped agent that still holds inventory keeps its hedge: the rules refuse an order that would leave the inventory unhedged, so "pay out everything" is not yet one click.
+- A stopped agent that still holds inventory keeps its hedge: the rules refuse an order that would leave the inventory unhedged. Unwind sells the inventory down on Midnight, hedged fill by fill, closes the hedge and stops the agent; what the inventory becomes stays in its Midnight wallet, so "pay out everything" then takes the Strike balance.
 - The Claude maker spends a capped budget of decisions a day and falls back to the rules when it is spent or the model is unreachable.
 - Demo revenue is roughly zero: x402 calls, set-up fees and builder fees are test ADA.
 
@@ -55,7 +55,6 @@ Strike is where every agent hedges. What the gateway does with it:
 
 - Real assets on Midnight through a bridge, and Strike mainnet with its real book; slippage under half the spread, maker orders first.
 - Outside market makers and takers with their own agents over the tools endpoint, paying per call; outside minds with a tools key.
-- Payouts that respect Strike's withdrawal limits and unwind inventory and hedge together; a further deposit into a running agent; Strike key rotation.
 - Custody: the owner holds the agent's keys, or a signer the owner and the operator share.
 - NIGHT-USD hedging with real NIGHT on mainnet; sUSDrf as market-maker collateral with Borrow & Earn funding the perps margin.
 - Agents in Midnight City trading through Strike with the same mandate gateway.
