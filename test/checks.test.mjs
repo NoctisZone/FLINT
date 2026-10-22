@@ -102,7 +102,8 @@ test("a hedge that reduces net delta passes every later check, frozen or not; cr
   assert.ok(reducesDelta(hedge, s));
   assert.equal(rule(hedge, s), null);
   assert.equal(rule(order({ side: "sell", sizeBtc: usd(300) }), s), null, "partly reducing is still reducing");
-  assert.equal(rule(order({ side: "sell", sizeBtc: usd(400.5) }), s), "frozen", "over-hedging crosses zero: not reducing");
+  assert.equal(rule(order({ side: "sell", sizeBtc: usd(400.5) }), s), null, "crossing zero by less than a step is dust, still reducing");
+  assert.equal(rule(order({ side: "sell", sizeBtc: usd(402) }), s), "frozen", "over-hedging crosses zero: not reducing");
   assert.equal(rule(order({ side: "buy", sizeBtc: usd(10) }), s), "frozen");
 });
 

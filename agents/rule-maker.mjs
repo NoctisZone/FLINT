@@ -47,6 +47,8 @@ export function makerDecision(v, { spreadBps = 25, requoteBps, ttlSec, sizeUsd, 
   }
   const cap = Math.min(m.maxQuoteUsd, v.mandate.risk.maxNetDeltaUsd);
   const size = Math.min(sizeUsd ?? cap, cap);
+  // a size at the hedge minimum rounds up to the step: rounded down it would fall under the minimum
+  const wantBtc = size >= minQuoteUsd && floor8(size / v.mark) * v.mark < minQuoteUsd ? round8(floor8(size / v.mark) + STEP_BTC) : size / v.mark;
   // a fill moves net delta by the quote's size: an ask lowers it, a bid raises it; neither may leave the limit
   const roomBtc = v.mandate.risk.maxNetDeltaUsd / v.mark;
   // frozen: a quote may bring net delta toward zero but never across it
@@ -62,12 +64,12 @@ export function makerDecision(v, { spreadBps = 25, requoteBps, ttlSec, sizeUsd, 
   const quotes = [];
   const reasons = [];
   if (!keep.ask && (!onlySide || onlySide === "ask")) {
-    const sizeBtc = Math.min(size / v.mark, v.holdings.spendable.btc, roomAsk, hedgeRoomAsk);
+    const sizeBtc = Math.min(wantBtc, v.holdings.spendable.btc, roomAsk, hedgeRoomAsk);
     if (fits(floor8(sizeBtc))) quotes.push({ side: "ask", sizeBtc: round8(floor8(sizeBtc)), price: ceil1(v.mark * (1 + half)), ttlSec: ttl });
     else reasons.push(size < minQuoteUsd ? `quote size ${size} USD is under the hedge minimum of ${minQuoteUsd} USD` : roomAsk * v.mark < minQuoteUsd ? "net delta leaves no room for an ask" : hedgeRoomAsk * v.mark < minQuoteUsd ? "the Strike position cap leaves no room to hedge an ask" : `not enough tBTC for an ask of at least ${minQuoteUsd} USD`);
   }
   if (!keep.bid && (!onlySide || onlySide === "bid")) {
-    const sizeBtc = Math.min(size / v.mark, v.holdings.spendable.usd / (v.mark * (1 - half)), roomBid, hedgeRoomBid);
+    const sizeBtc = Math.min(wantBtc, v.holdings.spendable.usd / (v.mark * (1 - half)), roomBid, hedgeRoomBid);
     if (fits(floor8(sizeBtc))) quotes.push({ side: "bid", sizeBtc: round8(floor8(sizeBtc)), price: floor1(v.mark * (1 - half)), ttlSec: ttl });
     else reasons.push(size < minQuoteUsd ? `quote size ${size} USD is under the hedge minimum of ${minQuoteUsd} USD` : roomBid * v.mark < minQuoteUsd ? "net delta leaves no room for a bid" : hedgeRoomBid * v.mark < minQuoteUsd ? "the Strike position cap leaves no room to hedge a bid" : `not enough tUSD for a bid of at least ${minQuoteUsd} USD`);
   }

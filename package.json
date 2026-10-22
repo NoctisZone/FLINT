@@ -12,6 +12,7 @@
     "live": "node --env-file-if-exists=.env cli/live.mjs",
     "strike": "node --env-file-if-exists=.env cli/strike.mjs",
     "liquidity": "node --env-file-if-exists=.env cli/liquidity.mjs",
+    "owner": "node --env-file-if-exists=.env cli/owner.mjs",
     "rogue": "node --env-file-if-exists=.env cli/rogue.mjs",
     "mock-feed": "node cli/mock-feed.mjs",
     "gateway": "node --env-file-if-exists=.env cli/gateway.mjs",

@@ -20,6 +20,10 @@ import { strikeClient, TESTNET } from "../gateway/strike.mjs";
 const strikePositions = {};
 import { userStream } from "../gateway/strike-stream.mjs";
 import { midnightVenue } from "../gateway/midnight.mjs";
+import { gatewayBoard } from "../gateway/desk.mjs";
+import { ownerApi } from "../gateway/owner.mjs";
+import { verifySignData } from "../gateway/cardano.mjs";
+import { fileURLToPath } from "node:url";
 import { feedServer, feedState } from "../gateway/feed.mjs";
 import { decisionLog } from "../gateway/log.mjs";
 import { gateway } from "../gateway/gateway.mjs";
@@ -43,7 +47,10 @@ const roundMs = Number(opt("round-ms", 20_000));
 const port = Number(opt("port", 4481));
 const toolsPort = Number(opt("tools-port", 0));
 const names = opt("agents", "mm-rule,citizen-a,citizen-b").split(",");
-for (const a of args.filter((x) => x.startsWith("--"))) if (!["--rounds", "--round-ms", "--agents", "--port", "--tools-port"].includes(a)) { console.error(`unknown option ${a}`); process.exit(2); }
+// where a maker's half waits for its taker: the server's offer board, or a board inside this process (a network without the offer board)
+const boardKind = opt("board", process.env.MIDNIGHT_BOARD || "server");
+for (const a of args.filter((x) => x.startsWith("--"))) if (!["--rounds", "--round-ms", "--agents", "--port", "--tools-port", "--board"].includes(a)) { console.error(`unknown option ${a}`); process.exit(2); }
+if (!["server", "gateway"].includes(boardKind)) { console.error(`--board is server or gateway, not ${boardKind}`); process.exit(2); }
 
 const log = (...x) => console.log(`[${new Date().toISOString().slice(11, 19)}]`, ...x);
 const ACCOUNTS = path.join("data", "strike-accounts.json");
@@ -68,6 +75,17 @@ for (const m of Object.values(all)) {
   if (process.env.HEDGE_WITHIN_SEC) m.risk.hedgeWithinSec = Number(process.env.HEDGE_WITHIN_SEC);
   if (process.env.MAX_POSITION_USD && m.strike.maxPositionUsd > 0) m.strike.maxPositionUsd = Number(process.env.MAX_POSITION_USD);
 }
+const MANDATES = path.join("data", "mandates");
+for (const agentId of Object.keys(all)) {
+  const file = path.join(MANDATES, `${agentId}.json`);
+  if (!fs.existsSync(file)) continue;
+  try {
+    const { mandate: m, signature } = JSON.parse(fs.readFileSync(file, "utf8"));
+    const v = verifySignData(signature.signature, signature.key);
+    if (v.ok && Buffer.from(v.payload).toString("utf8") === mandateHash(m) && m.owner === all[agentId].owner && Date.parse(m.expiry) > Date.now()) { all[agentId] = m; log(`${agentId}: owner-signed mandate ${mandateHash(m).slice(0, 12)}… from ${file}`); }
+    else log(`${agentId}: ignoring ${file}: signature, owner or expiry does not hold`);
+  } catch (err) { log(`${agentId}: ignoring ${file}: ${err.message.slice(0, 100)}`); }
+}
 const order = Object.keys(all);
 const minds = { "mm-rule": "maker", "mm-claude": "maker", "citizen-a": "citizen", "citizen-b": "citizen", rogue: "rogue" };
 // the agent's Cardano wallet, as cli/onboard.mjs derives it; its Midnight address stays hidden
@@ -75,6 +93,7 @@ const hex = (u8) => Buffer.from(u8).toString("hex");
 const walletsOf = (agentId) => ({ cardano: cardanoWallet(hex(secretFor(cfg.master, "cardano", agentId)), { stakeSeedHex: hex(secretFor(cfg.master, "cardano-stake", agentId)) }).address, midnight: "hidden" });
 const sides = { "citizen-a": "auto", "citizen-b": "auto" };
 
+const sharedBoard = boardKind === "gateway" ? gatewayBoard() : null;
 const agents = [];
 for (const spec of names) {
   const [agentId, given] = spec.split(":");
@@ -85,7 +104,7 @@ for (const spec of names) {
   const t0 = Date.now();
   const trader = await openMcpTrader({ name, seedHex: midnightSeedOf(cfg.master, index), key: cfg.nightgateKey, cfg, index, onProgress: (p) => { if (p.seconds % 30 === 0) log(`${agentId}: wallet syncing, ${p.seconds}s`); } });
   log(`${agentId}: wallet ready in ${Math.round((Date.now() - t0) / 1000)}s`);
-  const venue = midnightVenue({ trader, agentId, types, log: (e) => entries.append({ agent: agentId, ...e }) });
+  const venue = midnightVenue({ trader, agentId, types, ...(sharedBoard ? { board: sharedBoard } : {}), log: (e) => entries.append({ agent: agentId, ...e }) });
   // an agent that onboarded itself (cli/onboard.mjs) trades on its own Strike account with its builder fee; else the shared key
   const own = strikeAccounts[agentId];
   const keyName = `STRIKE_KEY_${agentId.toUpperCase().replace(/-/g, "_")}`;
@@ -145,7 +164,22 @@ runStart.books = structuredClone(books);
 for (const [id, b] of Object.entries(books)) if (names.some((n) => n.split(":")[0] === id)) log(`${id}: books from the last run: inventory ${b.midnightInventoryBtc} BTC, Strike ${b.strikePositionBtc} BTC, unhedged ${b.unhedgedBtc} BTC${b.frozen ? `, frozen (${b.frozenReason})` : ""}`);
 const feed = feedState();
 feed.setLiquidity(process.env.STRIKE_LIQUIDITY_NOTE || null);
-const server = await feedServer(feed, { port, host: "0.0.0.0" });
+feed.setBoard(boardKind);
+log(`midnight board: ${boardKind}`);
+const owner = ownerApi({
+  agents, log: (e) => entries.append(e),
+  // the gateway is built a few lines down; the handler only runs once it exists
+  gateway: { freeze: (...x) => g.freeze(...x), resume: (...x) => g.resume(...x), stop: (...x) => g.stop(...x), close: (...x) => g.close(...x), setMandate: (...x) => g.setMandate(...x), stateOf: (...x) => g.stateOf(...x) },
+  // the signed mandate outlives the run, and the vault gets its new hash
+  onMandate: async (a, sig) => {
+    fs.mkdirSync(MANDATES, { recursive: true });
+    fs.writeFileSync(path.join(MANDATES, `${a.agentId}.json`), JSON.stringify({ mandate: a.mandate, signature: { signature: sig.signature, key: sig.key }, hash: sig.hash, signedAt: new Date().toISOString() }, null, 1));
+    log(`${a.agentId}: mandate signed by its owner, hash ${sig.hash.slice(0, 12)}…`);
+    anchorMandate(a).catch((err) => log(`${a.agentId}: anchor after signing failed: ${err.message.slice(0, 120)}`));
+  },
+});
+const server = await feedServer(feed, { port, host: "0.0.0.0", staticDir: fileURLToPath(new URL("../arena/", import.meta.url)), handlers: [owner.handle] });
+feed.setOwner(true);
 log(`feed on http://localhost:${server.address().port}/feed/meta`);
 const pub = strikeClient({ baseUrl: process.env.STRIKE_API_URL || TESTNET });
 const mark = async () => { const p = await pub.markPrice("BTC-USD"); return { mark: Number(p.p), funding: Number(p.r) }; };
@@ -155,7 +189,10 @@ log(`Strike minimum hedge notional: ${minHedgeUsd} USD`);
 
 const g = gateway({ agents, mark, feed, books, saveBooks, minHedgeUsd, log: (e) => { const full = entries.append(e); log(`${e.agent ?? "gateway"}: ${e.kind}${e.rule ? ` ${e.rule}` : ""}${e.reason ? ` — ${e.reason}` : ""}${e.error ? ` — ${e.error}` : ""}`); return full; } });
 
+let stopping = false;
 async function shutdown() {
+  if (stopping) return;
+  stopping = true;
   log("stopping: retiring quotes, closing wallets");
   await g.stop();
   await refreshReconcile().catch((err) => log(`reconcile: ${err.message}`));
@@ -183,15 +220,20 @@ setInterval(refreshCapital, 600_000).unref();
 // attestations on the vault: the mandate anchor once, then a window every ATTEST_EVERY_ROUNDS rounds, per maker
 const VAULT = process.env.ATTESTATION_VAULT || null;
 const attestEvery = Number(process.env.ATTEST_EVERY_ROUNDS || 10);
+feed.setAttestEvery(attestEvery * roundMs);
 const attesters = new Map();
 const attestDir = path.join("data", "attestations");
 let windowFrom = new Date().toISOString();
 async function anchorMandates() {
   if (!VAULT) { log("no ATTESTATION_VAULT: attestations off"); return; }
   fs.mkdirSync(attestDir, { recursive: true });
-  for (const a of agents) {
-    if (!a.strike) continue;
-    const at = attester({ call: (tool, args) => a.trader.call(tool, args), contractAddress: VAULT, artifact: process.env.ATTESTATION_ARTIFACT || "attestation-vault-32", waitForJob: (jobId, sessionId) => import("../market/chain.mjs").then((m) => m.waitForJob(cfg, jobId, sessionId, { timeoutMs: 300_000 })), log: (e) => entries.append({ agent: a.agentId, ...e }) });
+  for (const a of agents) await anchorMandate(a);
+}
+/** One maker's mandate hash on the vault, under its own attester id; after a start and after the owner signs anew. */
+async function anchorMandate(a) {
+  if (!VAULT || !a.strike) return;
+  {
+    const at = attesters.get(a.agentId) ?? attester({ call: (tool, args) => a.trader.call(tool, args), contractAddress: VAULT, artifact: process.env.ATTESTATION_ARTIFACT || "attestation-vault-32", waitForJob: (jobId, sessionId) => import("../market/chain.mjs").then((m) => m.waitForJob(cfg, jobId, sessionId, { timeoutMs: 300_000 })), log: (e) => entries.append({ agent: a.agentId, ...e }) });
     attesters.set(a.agentId, at);
     try {
       const id = await at.identity();
@@ -298,6 +340,7 @@ if (toolsPort) {
   const PAID = { post_quote: "1000000", take_quote: "1000000", place_order: "1000000", hedge: "2000000" };
   const prices = Object.fromEntries(Object.entries(PAID).map(([k, v]) => [k, process.env[`X402_PRICE_${k.toUpperCase()}`] || v]));
   const revenue = { calls: 0, lovelace: 0n };
+  feed.setTools({ url: process.env.PUBLIC_TOOLS_URL ? `${process.env.PUBLIC_TOOLS_URL}/mcp/` : null, prices, paid: Boolean(x402) });
   if (x402) log(`x402 on: ${Object.entries(prices).map(([k, v]) => `${k} ${Number(v) / 1e6} ADA`).join(", ")} to ${x402.payTo}`);
   const tools = http.createServer(async (req, res) => {
     const m = req.url.match(/^\/mcp\/([a-z0-9-]+)$/);
@@ -328,16 +371,17 @@ if (toolsPort) {
 }
 
 if (rounds > 0) {
-  for (let i = 1; i <= rounds; i++) {
+  for (let i = 1; i <= rounds && !stopping; i++) {
     log(`round ${i} of ${rounds}`);
     await g.round();
+    if (stopping) break;
     if (i % 5 === 0) await refreshReconcile().catch((err) => log(`reconcile: ${err.message}`));
-    if (i % attestEvery === 0) await attestWindow().catch((err) => log(`attest: ${err.message}`));
+    if (i % attestEvery === 0 && !stopping) await attestWindow().catch((err) => log(`attest: ${err.message}`));
     // several sponsored calls in a row: in the background, so the rounds and the quotes go on
-    if (badgesEvery && i % badgesEvery === 0 && i < rounds) attestBadges().catch((err) => log(`badges: ${err.message}`));
-    if (i < rounds) await new Promise((r) => setTimeout(r, roundMs));
+    if (badgesEvery && i % badgesEvery === 0 && i < rounds && !stopping) attestBadges().catch((err) => log(`badges: ${err.message}`));
+    if (i < rounds && !stopping) await new Promise((r) => setTimeout(r, roundMs));
   }
-  await attestWindow().catch((err) => log(`attest: ${err.message}`));
+  if (!stopping) await attestWindow().catch((err) => log(`attest: ${err.message}`));
   await shutdown();
 } else {
   g.start(roundMs);

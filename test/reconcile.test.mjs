@@ -63,3 +63,35 @@ test("a fill hedged by netting counts as hedged; the delta walk starts from the 
   assert.equal(r.claims.maxFillToHedgeSec, 4);
   assert.equal(r.claims.maxNetDeltaUsd, 120, "0.0015 at 80000 after the first fill");
 });
+
+test("with timestamps the delta walk follows Strike's own fills: a hedge one step short leaves one step of delta, not a phantom position", () => {
+  const T = Date.parse("2026-10-22T07:00:00Z");
+  const entries = [
+    { seq: 1, kind: "decision", ts: "2026-10-22T06:59:00Z", mark: 82_000 },
+    { seq: 2, kind: "fill", id: "a", pair: "tBTC/tUSD", side: "buy", sizeBtc: 0.00145, at: T },
+    { seq: 3, kind: "hedge.placed", clientOrderId: "h1", side: "sell", sizeBtc: 0.00144, covers: ["a"], ts: "2026-10-22T07:00:00.100Z" },
+    { seq: 4, kind: "fill", id: "b", pair: "tBTC/tUSD", side: "sell", sizeBtc: 0.00145, at: T + 240_000 },
+    { seq: 5, kind: "hedge.netted", fillId: "a", latencyMs: 240_000, side: "sell", sizeBtc: 0.00145 },
+    { seq: 6, kind: "hedge.placed", clientOrderId: "h2", side: "buy", sizeBtc: 0.00144, covers: ["b"], ts: "2026-10-22T07:04:00.100Z" },
+    { seq: 7, kind: "hedge.filled", fillId: "b", clientOrderId: "h2", side: "buy", sizeBtc: 0.00145, latencyMs: 80 },
+  ];
+  const strikeFills = [
+    { client_order_id: "h1", symbol: "BTC-USD", side: "sell", size: "0.00144", price: "81990", timestamp: T + 90 },
+    { client_order_id: "h2", symbol: "BTC-USD", side: "buy", size: "0.00144", price: "82010", timestamp: T + 240_080 },
+  ];
+  const r = reconcile({ entries, strikeFills, mandate: M, now: T + 300_000 });
+  assert.deepEqual(r.violations.map((v) => v.rule), ["risk.hedgeWithinSec"], "the step left open counted as the fill's latency, nothing else");
+  assert.equal(r.claims.maxNetDeltaUsd, 118.9, "0.00145 BTC at 82000 for 90 ms, then one step");
+});
+
+test("a fill whose hedge is placed and still inside its deadline is pending, not unhedged; past the deadline it is", () => {
+  const T = Date.parse("2026-10-22T07:00:00Z");
+  const entries = [
+    { seq: 1, kind: "decision", ts: "2026-10-22T06:59:00Z", mark: 82_000 },
+    { seq: 2, kind: "fill", id: "a", pair: "tBTC/tUSD", side: "buy", sizeBtc: 0.00145, at: T },
+    { seq: 3, kind: "hedge.placed", clientOrderId: "h1", side: "sell", sizeBtc: 0.00145, covers: ["a"], ts: "2026-10-22T07:00:00.100Z" },
+  ];
+  assert.deepEqual(reconcile({ entries, strikeFills: [], mandate: M, now: T + 10_000 }).violations, []);
+  assert.deepEqual(reconcile({ entries, strikeFills: [], mandate: M, now: T + 40_000 }).violations.map((v) => v.rule), ["unhedged-fill"]);
+});
+

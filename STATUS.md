@@ -30,19 +30,27 @@ Routes: `meta`, `agents`, `quotes`, `fills`, `decisions`, `refusals`, `proofs`, 
 - **x402 pay-per-call**: an outside agent paid 1 tADA on preprod for a `post_quote` through the tools endpoint; the payment settled on chain and the quote went through the checks. Shown on `revenue`.
 - **Reconciler**: every five rounds, this run's Midnight fills against Strike's own fill history and the mandate; the four badge claims on `proofs`.
 
+## The page
+
+`arena/flint.html` is served by the feed server at `/`: `https://agentic.demo.odatano.dev/flint/` over the mock, `https://agentic.demo.odatano.dev/flint-live/` over the running gateway (trailing slash: the page loads `feed/…` and `logos/…` relative to itself). It polls every five seconds and maps the routes below into its own state; `arena/CONNECT.md` is the map. Opened from a file it simulates. The Console's owner actions are still demo actions (no owner API yet).
+
+## The owner API
+
+Next to the feed, under `/owner/` (so `https://agentic.demo.odatano.dev/flint-live/owner/…`), for the page's Terminal and Console. A session comes from a CIP-30 wallet: `POST challenge {address | addressHex}` answers `{nonce, message}`, the wallet signs the message with `signData`, `POST session {nonce, signature: {signature, key}}` answers `{token, address, agents}`; `agents` are the ones whose mandate names that address as `owner`. With `Authorization: Bearer <token>`: `GET session`, `DELETE session`, `GET agents` (full mandates and state), `POST agents/:id/pause`, `/resume`, `/stop` (freeze by hand, offers and Strike orders pulled, nothing new until a mandate is signed), `/close` (reduce-only market order), and `PUT agents/:id/mandate {mandate, signature}` where the signature is `signData` over the mandate's hash (`canonical` JSON, SHA-256, as the page computes it). A signed mandate is in force from the next round, saved under `data/mandates/`, loaded on the next start, and anchored on the vault again. Errors come as `{error}` with 400, 401, 404 or 409. `meta.owner` says the API is on; `meta.tools` carries the public tools address and the x402 prices. `npm run owner -- …` does the same from a shell with a headless owner key.
+
 ## The feed, with real samples
 
-`meta` — `strikeLiquidity` names who stands on the other side of the hedges when the venue has no market maker (our own testnet liquidity account), null when it is the real book.
+`meta` — `strikeLiquidity` names who stands on the other side of the hedges when the venue has no market maker (our own testnet liquidity account), null when it is the real book. `midnightBoard` is where quotes wait for their taker: `server` (the offer board) or `gateway` (this process hands the halves over; for a network without the board). `attestEveryMs` is how often a window attestation is made, for the page's countdown.
 ```json
-{ "runStart": "2026-10-21T19:49:35.478Z", "networks": { "midnight": "preprod", "strike": "testnet" }, "strikeMark": 84466.93, "sponsorReady": null, "strikeLiquidity": "flint testnet liquidity account: stands in for the empty testnet book", "serverTime": "2026-10-21T19:51:04.095Z" }
+{ "runStart": "2026-10-21T19:49:35.478Z", "networks": { "midnight": "preprod", "strike": "testnet" }, "strikeMark": 84466.93, "sponsorReady": null, "strikeLiquidity": "flint testnet liquidity account: stands in for the empty testnet book", "midnightBoard": "server", "attestEveryMs": 300000, "tools": { "url": "https://…/flint-tools/mcp/", "prices": { "post_quote": "1000000", "take_quote": "1000000", "place_order": "1000000", "hedge": "2000000" }, "paid": true }, "owner": true, "serverTime": "2026-10-21T19:51:04.095Z" }
 ```
 
-`agents` — one card per agent. `type` is `mm`, `citizen` or `rogue`; `status` is `quoting`, `hedging` (a hedge is pending), `watching` (citizen), `probing` (the rogue, one refused attempt a round), `frozen`, `paused`, `starting`. The day's figures (`day` is the UTC date): `equityUsd` (Midnight holdings at the mark plus Strike margin balance), `equityStartUsd` and `pnlPct` since the day's first round, `spreadCapturedUsd` (what fills earned against the mark), `hedgeCostUsd` (Strike fees, builder fees and slippage against the mark), `strikeVolumeUsd`, `builderFeesUsd`; `wallets` (Cardano address, Midnight "hidden").
+`agents` — one card per agent. `type` is `mm`, `citizen` or `rogue`; `status` is `quoting`, `hedging` (a hedge is pending), `watching` (citizen), `probing` (the rogue, one refused attempt a round), `frozen` (a late hedge), `paused` (by its owner), `stopped` (by its owner, until a new mandate is signed), `starting`. `mandate.full` is the whole mandate. The day's figures (`day` is the UTC date): `equityUsd` (Midnight holdings at the mark, plus `midnight.reservedUsd`, the coins locked in open quotes, plus Strike margin balance), `equityStartUsd` and `pnlPct` since the day's first round, `spreadCapturedUsd` (what fills earned against the mark), `hedgeCostUsd` (Strike fees, builder fees and slippage against the mark), `strikeVolumeUsd`, `builderFeesUsd`; `wallets` (Cardano address, Midnight "hidden").
 ```json
 { "agents": [ {
   "agentId": "mm-rule", "name": "mm-rule", "type": "mm", "status": "hedging",
   "mandate": { "hash": "27b5b1c5…", "maxNetDeltaUsd": 150, "hedgeWithinSec": 120, "maxQuoteUsd": 150, "maxPositionUsd": 500 },
-  "midnight": { "btc": 0.00350749, "usd": 390.45, "openQuotes": 2 },
+  "midnight": { "btc": 0.00350749, "usd": 390.45, "reservedUsd": 236.9, "openQuotes": 2 },
   "strikePositionBtc": -0.00319, "netDeltaUsd": -120.16, "unhedgedUsd": -119.94,
   "hedges": 0, "maxHedgeLatencySec": 0, "pending": 1,
   "equityUsd": 1016.84, "equityStartUsd": 1016.84, "pnlPct": 0, "spreadCapturedUsd": 0.37, "hedgeCostUsd": 0.23, "strikeVolumeUsd": 149.61, "builderFeesUsd": 0.15, "day": "2026-10-22",

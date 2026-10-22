@@ -2,6 +2,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { feedServer, feedState } from "../gateway/feed.mjs";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 test("routes answer the state, lists newest first with `since`, unknown routes 404", async () => {
   const s = feedState({ runStart: "2026-10-22T10:00:00Z" });
@@ -42,4 +45,23 @@ test("a Midnight fill learns its hedge later; a Strike fill entry or an unknown 
   const fills = s.get("fills").fills;
   assert.deepEqual(fills.map((f) => f.hedge?.how ?? null), [null, "market"]);
   assert.equal(fills[1].hedge.latencySec, 3.1);
+});
+
+test("with a static folder the server hands out the page at / and its files, never anything outside the folder", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "flint-arena-"));
+  fs.writeFileSync(path.join(dir, "flint.html"), "<!doctype html><title>Flint</title>");
+  fs.mkdirSync(path.join(dir, "logos"));
+  fs.writeFileSync(path.join(dir, "logos", "x.svg"), "<svg/>");
+  const s = feedState();
+  const server = await feedServer(s, { port: 0, staticDir: dir });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const page = await fetch(base + "/");
+  assert.deepEqual([page.status, page.headers.get("content-type"), await page.text()], [200, "text/html; charset=utf-8", "<!doctype html><title>Flint</title>"]);
+  const logo = await fetch(base + "/logos/x.svg");
+  assert.deepEqual([logo.status, logo.headers.get("content-type")], [200, "image/svg+xml"]);
+  assert.equal((await fetch(base + "/feed/meta")).status, 200, "the feed still answers");
+  assert.equal((await fetch(base + "/logos/../../etc/passwd")).status, 404);
+  assert.equal((await fetch(base + "/nothing.css")).status, 404);
+  server.close();
+  fs.rmSync(dir, { recursive: true, force: true });
 });

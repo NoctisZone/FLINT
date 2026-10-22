@@ -40,6 +40,7 @@ import { mandateProblems } from "./mandate.mjs";
 
 const refusal = (rule, limit, attempted, message) => ({ rule, limit, attempted, message });
 const EPS = 1e-9;
+const STEP_BTC = 0.00001; // Strike's size step: less than that across zero is dust, not a position
 
 /** +size buys BTC, −size sells it. */
 export function signedSize(a) {
@@ -48,12 +49,12 @@ export function signedSize(a) {
 
 export const netDeltaBtc = (s) => s.midnightInventoryBtc + s.strikePositionBtc;
 
-/** True when the action moves net delta toward zero without crossing it; a quote counts as if it filled. */
+/** True when the action moves net delta toward zero without crossing it by more than dust; a quote counts as if it filled. */
 export function reducesDelta(a, s) {
   if (a.kind === "cancel" || !(a.sizeBtc > 0)) return false;
   const before = netDeltaBtc(s);
   const after = before + signedSize(a);
-  return Math.abs(after) < Math.abs(before) - EPS && Math.sign(after) !== -Math.sign(before);
+  return Math.abs(after) < Math.abs(before) - EPS && (Math.sign(after) !== -Math.sign(before) || Math.abs(after) < STEP_BTC);
 }
 
 /** @returns {null | {rule, limit, attempted, message}} */

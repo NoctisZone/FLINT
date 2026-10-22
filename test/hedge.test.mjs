@@ -189,17 +189,19 @@ test("a netting fill that leaves less than one step closes the exposure; the dus
   assert.equal(h.state.frozen, false);
 });
 
-test("a carried hedge never crosses zero when the inventory holds dust; a few dollars of exposure close as dust", async () => {
-  const { h, orders, log } = setup({ minNotionalUsd: 100, state: { midnightInventoryBtc: 0.00178749, strikePositionBtc: -0.00319, unhedgedBtc: -0.00141, frozen: true, frozenReason: "late" } });
+test("a carried hedge may cross zero by less than a step (the inventory's dust), never by more; a few dollars of exposure close as dust", async () => {
+  const { h, orders } = setup({ minNotionalUsd: 100, state: { midnightInventoryBtc: 0.00178749, strikePositionBtc: -0.00319, unhedgedBtc: -0.00141, frozen: true, frozenReason: "late" } });
   const r = await h.rehedge();
   assert.ok(r.placed);
-  assert.deepEqual([orders[0].side, orders[0].size], ["buy", 0.0014], "0.00141 would cross zero by the inventory's dust");
-  await h.onStrikeEvent({ kind: "fill", clientOrderId: r.clientOrderId, side: "BUY", size: "0.0014", price: "84000", at: T0 + 300 });
-  assert.equal(h.state.unhedgedBtc, -0.00001, "one step left");
-  const r2 = await h.rehedge();
-  assert.deepEqual(r2, { placed: false, dust: true });
-  assert.equal(h.state.unhedgedBtc, 0);
-  assert.equal(h.state.frozen, false);
+  assert.deepEqual([orders[0].side, orders[0].size], ["buy", 0.00141], "0.00141 crosses zero by 0.0000075: allowed, a step short would leave the fill open");
+  await h.onStrikeEvent({ kind: "fill", clientOrderId: r.clientOrderId, side: "BUY", size: "0.00141", price: "84000", at: T0 + 300 });
+  assert.deepEqual([h.state.unhedgedBtc, h.state.frozen, h.pending.length], [0, false, 0]);
+  const far = setup({ state: { midnightInventoryBtc: 0.003, strikePositionBtc: -0.001, unhedgedBtc: 0.003 } });
+  await far.h.rehedge();
+  assert.deepEqual([far.orders[0].side, far.orders[0].size], ["sell", 0.002], "net is 0.002: the hedge stops there, 0.001 of the exposure is already offset");
+  const { h: d, log } = setup({ minNotionalUsd: 100, state: { midnightInventoryBtc: 0.00003, unhedgedBtc: 0.00003, frozen: true, frozenReason: "late" } });
+  assert.deepEqual(await d.rehedge(), { placed: false, dust: true });
+  assert.deepEqual([d.state.unhedgedBtc, d.state.frozen], [0, false]);
   assert.ok(log.some((e) => e.kind === "dust"));
 });
 

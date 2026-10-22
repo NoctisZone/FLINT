@@ -14,8 +14,9 @@
  * @param {object} o.mandate
  * @param {number} [o.toleranceBtc]   size rounding between venues
  * @param {number} [o.startDeltaBtc]  net delta the agent carried into this run
+ * @param {number} [o.now]            ms; a fill still inside its hedge deadline, with an order placed, is pending rather than unhedged
  */
-export function reconcile({ entries, strikeFills, mandate, toleranceBtc = 1e-8, startDeltaBtc = 0 }) {
+export function reconcile({ entries, strikeFills, mandate, toleranceBtc = 1e-8, startDeltaBtc = 0, now = Date.now() }) {
   const violations = [];
   const say = (rule, detail) => violations.push({ rule, ...detail });
 
@@ -44,24 +45,46 @@ export function reconcile({ entries, strikeFills, mandate, toleranceBtc = 1e-8, 
 
   // every Midnight fill has a hedge that filled within the deadline
   const latencies = [];
+  const when = (x) => Number(x.at ?? x.timestamp ?? x.time ?? (x.ts ? Date.parse(x.ts) : NaN));
   for (const f of fills) {
     const h = hedged.find((x) => x.fillId === f.id);
-    if (!h) { say("unhedged-fill", { fillId: f.id, sizeBtc: f.sizeBtc, side: f.side }); continue; }
+    if (!h) {
+      const covered = [...placed.values()].some((p) => (p.covers ?? []).includes(f.id));
+      if (covered && now - when(f) <= mandate.risk.hedgeWithinSec * 1000) continue;
+      say("unhedged-fill", { fillId: f.id, sizeBtc: f.sizeBtc, side: f.side });
+      continue;
+    }
     latencies.push(h.latencyMs);
     if (h.latencyMs > mandate.risk.hedgeWithinSec * 1000) say("risk.hedgeWithinSec", { fillId: f.id, latencyMs: h.latencyMs, limitMs: mandate.risk.hedgeWithinSec * 1000 });
     if (f.pair && !mandate.midnight.pairs.includes(f.pair)) say("midnight.pairs", { fillId: f.id, pair: f.pair });
   }
 
-  // net delta over time: Midnight fills move it, Strike fills move it back, in log order; netting moves nothing
+  // net delta over time: Midnight fills move it, Strike's own fills move it back, in time order; netting moves nothing.
+  // Without timestamps (old logs) the walk follows the log and the hedge.filled entries instead.
   let delta = startDeltaBtc;
   let maxDeltaUsd = 0;
   let lastMark = 0;
-  for (const e of entries) {
-    if (e.mark) lastMark = e.mark;
-    if (e.kind === "fill") delta += e.side === "buy" ? e.sizeBtc : -e.sizeBtc;
-    else if (e.kind === "hedge.filled") delta += e.side === "buy" ? (e.sizeBtc ?? 0) : -(e.sizeBtc ?? 0);
-    else continue;
-    if (lastMark) maxDeltaUsd = Math.max(maxDeltaUsd, Math.abs(delta) * lastMark);
+  const timed = fills.length > 0 && fills.every((f) => when(f) > 0) && strikeFills.every((f) => when(f) > 0);
+  if (timed) {
+    const marks = entries.filter((e) => e.mark && when(e) > 0).map((e) => ({ t: when(e), mark: e.mark }));
+    const markAt = (t) => { let m = 0; for (const x of marks) if (x.t <= t) m = x.mark; return m || marks[0]?.mark || 0; };
+    const events = [
+      ...fills.map((f) => ({ t: when(f), d: f.side === "buy" ? f.sizeBtc : -f.sizeBtc })),
+      ...strikeFills.map((f) => ({ t: when(f), d: String(f.side).toLowerCase() === "buy" ? Number(f.size) : -Number(f.size) })),
+    ].sort((a, b) => a.t - b.t);
+    for (const e of events) {
+      delta += e.d;
+      const mark = markAt(e.t);
+      if (mark) maxDeltaUsd = Math.max(maxDeltaUsd, Math.abs(delta) * mark);
+    }
+  } else {
+    for (const e of entries) {
+      if (e.mark) lastMark = e.mark;
+      if (e.kind === "fill") delta += e.side === "buy" ? e.sizeBtc : -e.sizeBtc;
+      else if (e.kind === "hedge.filled") delta += e.side === "buy" ? (e.sizeBtc ?? 0) : -(e.sizeBtc ?? 0);
+      else continue;
+      if (lastMark) maxDeltaUsd = Math.max(maxDeltaUsd, Math.abs(delta) * lastMark);
+    }
   }
   if (maxDeltaUsd > mandate.risk.maxNetDeltaUsd + 1e-6) say("risk.maxNetDeltaUsd", { maxDeltaUsd, limit: mandate.risk.maxNetDeltaUsd });
 

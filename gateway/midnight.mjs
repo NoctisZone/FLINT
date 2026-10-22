@@ -1,11 +1,15 @@
 /**
  * One agent's Midnight venue over its NIGHTGATE MCP server: quotes are swap
- * halves posted to the offer board, a fill is the quote's row turning
- * `filled` with the swap's txHash, retiring a quote frees its coins.
+ * halves posted to a board, a fill is the quote's row turning `filled` with
+ * the swap's txHash, retiring a quote frees its coins. The board is the
+ * server's offer board or the one inside the gateway (`gateway/desk.mjs`);
+ * the swap itself is the same.
  *
  * tBTC is counted in satoshi (1e-8), tUSD in cents; the gateway speaks BTC
  * and USD. A quote's price is USD per BTC.
  */
+
+import { serverBoard } from "./desk.mjs";
 
 export const SATS = 100_000_000;
 export const CENTS = 100;
@@ -21,9 +25,12 @@ const usd = (c) => Number(c) / CENTS;
  * @param {object} o.trader     a market/mcp-trader.mjs trader: makeOffer, post, retire, revert, takeOffer, submitSwap, getOffer, listOffers, holdings
  * @param {string} o.agentId
  * @param {{tBTC: string, tUSD: string}} o.types   raw token types on the factory
+ * @param {object} [o.board]    serverBoard(trader) by default, or a gatewayBoard shared by the process's agents
  */
-export function midnightVenue({ trader, agentId, types, pair = "tBTC/tUSD", tag = TAG, now = Date.now, log = () => {} }) {
+export function midnightVenue({ trader, agentId, types, board = serverBoard(trader), pair = "tBTC/tUSD", tag = TAG, now = Date.now, log = () => {} }) {
   const open = new Map(); // quoteId → quote
+  // the server's board records the fill against the offer itself; the gateway's board is told here
+  const onServer = board.kind === "server";
 
   /** A row of the board as a quote: side from the maker's view, size in BTC, price in USD per BTC. */
   function rowToQuote(r) {
@@ -44,7 +51,7 @@ export function midnightVenue({ trader, agentId, types, pair = "tBTC/tUSD", tag 
       const expiresAt = new Date(now() + ttlSec * 1000).toISOString();
       let posted;
       try {
-        posted = await trader.post({ offer: made.text, tags: [tag, agentId, side], expiresAt });
+        posted = await board.post({ offer: made.text, tags: [tag, agentId, side], expiresAt, gives: give, wants: want });
       } catch (err) {
         await trader.revert(made.half).catch(() => {});
         throw err;
@@ -60,7 +67,7 @@ export function midnightVenue({ trader, agentId, types, pair = "tBTC/tUSD", tag 
       const q = open.get(quoteId);
       if (!q) return false;
       open.delete(quoteId);
-      await trader.retire(quoteId).catch((err) => { if (!/expired|filled/i.test(err.message)) throw err; });
+      await board.retire(quoteId).catch((err) => { if (!/expired|filled|taken/i.test(err.message)) throw err; });
       await trader.revert(q.half).catch(() => {});
       log({ kind: "quote.retired", agent: agentId, quoteId });
       return true;
@@ -75,18 +82,27 @@ export function midnightVenue({ trader, agentId, types, pair = "tBTC/tUSD", tag 
       const expect = q.side === "ask"
         ? { gives: { [types.tBTC]: String(sats(q.sizeBtc)) }, wants: { [types.tUSD]: String(cents(q.sizeBtc * q.price)) } }
         : { gives: { [types.tUSD]: String(cents(q.sizeBtc * q.price)) }, wants: { [types.tBTC]: String(sats(q.sizeBtc)) } };
-      const taken = await trader.takeOffer({ text: q.offer, offerId: q.quoteId, expect });
+      if (!onServer) board.claim(q.quoteId, agentId);
+      const ref = onServer ? { offerId: q.quoteId } : {};
       const t0 = now();
-      let result;
+      let taken, result;
       try {
-        result = await trader.submitSwap({ offerId: q.quoteId, takerHalf: taken.takerHalf });
+        taken = await trader.takeOffer({ text: q.offer, ...ref, expect });
+        try {
+          result = await trader.submitSwap({ ...ref, takerHalf: taken.takerHalf });
+        } catch (err) {
+          await trader.revert(taken.takerHalf).catch(() => {});
+          throw err;
+        }
       } catch (err) {
-        await trader.revert(taken.takerHalf).catch(() => {});
+        if (!onServer) board.release(q.quoteId);
         throw err;
       }
-      if (result.status !== "succeeded" && !(result.status === "reconciliation_required" && result.txHash)) await trader.revert(taken.takerHalf).catch(() => {});
+      const landed = result.status === "succeeded" || (result.status === "reconciliation_required" && !!result.txHash);
+      if (!landed) await trader.revert(taken.takerHalf).catch(() => {});
+      if (!onServer) { if (landed) board.settled(q.quoteId, result.txHash); else board.release(q.quoteId); }
       log({ kind: "take", agent: agentId, quoteId: q.quoteId, side: q.side === "ask" ? "buy" : "sell", sizeBtc: q.sizeBtc, price: q.price, status: result.status, txHash: result.txHash, provingMs: taken.provingMs, sponsorMs: now() - t0 });
-      return { ...result, landed: result.status === "succeeded" || (result.status === "reconciliation_required" && !!result.txHash) };
+      return { ...result, landed };
     },
 
     /**
@@ -98,7 +114,7 @@ export function midnightVenue({ trader, agentId, types, pair = "tBTC/tUSD", tag 
       const fills = [];
       for (const q of [...open.values()]) {
         let row;
-        try { row = await trader.getOffer(q.quoteId); } catch (err) { log({ kind: "poll.error", agent: agentId, quoteId: q.quoteId, error: err.message }); continue; }
+        try { row = await board.getOffer(q.quoteId); } catch (err) { log({ kind: "poll.error", agent: agentId, quoteId: q.quoteId, error: err.message }); continue; }
         const status = row?.status ?? row?.value?.status;
         if (!status || status === "open") continue;
         open.delete(q.quoteId);
@@ -115,7 +131,7 @@ export function midnightVenue({ trader, agentId, types, pair = "tBTC/tUSD", tag 
 
     /** Open quotes on the board for this pair, both sides, newest first. */
     async board() {
-      const rows = [...await trader.listOffers({ givesType: types.tBTC, wantsType: types.tUSD }), ...await trader.listOffers({ givesType: types.tUSD, wantsType: types.tBTC })];
+      const rows = [...await board.listOffers({ givesType: types.tBTC, wantsType: types.tUSD }), ...await board.listOffers({ givesType: types.tUSD, wantsType: types.tBTC })];
       return rows.map(rowToQuote).filter(Boolean);
     },
 
@@ -128,6 +144,7 @@ export function midnightVenue({ trader, agentId, types, pair = "tBTC/tUSD", tag 
     },
 
     rowToQuote,
+    get boardKind() { return board.kind; },
   };
 }
 

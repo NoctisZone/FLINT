@@ -111,3 +111,13 @@ test("an auto citizen takes the other side when that is all the board offers", (
   assert.match(d.reason, /only side on the board/);
   assert.equal(citizenDecision(v, { side: "buy", rnd: () => 0 }).take, null, "a fixed side does not switch");
 });
+
+test("a size at the hedge minimum rounds up to the step, so the quote stays hedgeable", () => {
+  const v = view({ mark: 82_219, holdings: { btc: 0.0058, usd: 450, spendable: { btc: 0.0058, usd: 450 } } });
+  const d = makerDecision(v, { sizeUsd: 100, minQuoteUsd: 100 });
+  assert.deepEqual(d.quotes.map((q) => [q.side, q.sizeBtc]), [["ask", 0.00122], ["bid", 0.00122]], "0.00121 would be 99.49 USD");
+  assert.ok(d.quotes.every((q) => q.sizeBtc * 82_219 >= 100));
+  const big = makerDecision(v, { sizeUsd: 150, minQuoteUsd: 100 });
+  assert.equal(big.quotes[0].sizeBtc, 0.00182, "well above the minimum: rounded down as before");
+});
+

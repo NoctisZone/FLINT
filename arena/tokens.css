@@ -1,0 +1,54 @@
+/* FLINT tokens, as the page uses them. Light is the default; dark follows the system until the viewer picks a theme
+   (html[data-theme="light" | "dark"]). Canvases read these at draw time, so a theme change redraws them. */
+@font-face{font-family:'Geist';font-style:normal;font-weight:100 900;font-display:swap;src:url(fonts/Geist-Variable.woff2) format('woff2')}
+@font-face{font-family:'Geist Mono';font-style:normal;font-weight:100 900;font-display:swap;src:url(fonts/GeistMono-Variable.woff2) format('woff2')}
+
+:root{
+  --is-dark:0;
+  /* ground and surfaces: cool lab white */
+  --bg:#F1F2F5; --surface:#FFFFFF; --surface-2:#F7F8FA; --well:#EEF0F4;
+  --line:#E0E3E9; --line-2:#C8CED7; --line-c:#CDD3DC; --grid-c:#0A0C10;
+  /* ink ramp */
+  --ink:#0A0C10; --t2:#2A303B; --t3:#4A5363; --t4:#5F6879; --on:#FFFFFF;
+  /* signals: the Noctis cycle, deepened so it reads on white; pink = brand and agents, cyan = Midnight, orange = Strike, yellow = Claude, green = proved, red = refused */
+  --pink:#D4007A; --cyan:#007F98; --orange:#CC5200; --yellow:#8F6A00; --green:#00845B; --red:#CC1D47;
+  --on-pink:#FFFFFF; --on-cyan:#FFFFFF;
+  --dim:rgba(241,242,245,.8); --glass:rgba(255,255,255,.8);
+  --shadow:0 1px 2px rgba(16,24,40,.05),0 14px 34px -20px rgba(16,24,40,.22);
+  --join-bg:#0A0C10; --join-ink:#F1F3F6; --join-t2:#B4BBC7;
+  /* type: Geist for the interface and the thin display numbers, Geist Mono for every measured value and label */
+  --sans:'Geist','Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  --mono:'Geist Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --ease:cubic-bezier(.2,0,0,1); --out:cubic-bezier(.16,1,.3,1);
+  --r:3px; --r-ctl:999px;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --is-dark:1;
+  --bg:#07080A; --surface:#0E1014; --surface-2:#13161B; --well:#0A0C0F;
+  --line:#1D2127; --line-2:#2B3139; --line-c:#252A32; --grid-c:#FFFFFF;
+  --ink:#ECEFF3; --t2:#C3C9D3; --t3:#9CA5B3; --t4:#828C9C; --on:#07080A;
+  --pink:#FF2FB0; --cyan:#00E5FF; --orange:#FF7A1A; --yellow:#FFD400; --green:#00FFA3; --red:#FF5C7A;
+  --on-pink:#12030C; --on-cyan:#001418;
+  --dim:rgba(4,5,7,.76); --glass:rgba(9,10,13,.78);
+  --shadow:0 1px 0 rgba(255,255,255,.03) inset,0 26px 50px -30px rgba(0,0,0,.95);
+  --join-bg:#13161B; --join-ink:#ECEFF3; --join-t2:#AEB6C2;
+  color-scheme:dark}}
+:root[data-theme="dark"]{
+  --is-dark:1;
+  --bg:#07080A; --surface:#0E1014; --surface-2:#13161B; --well:#0A0C0F;
+  --line:#1D2127; --line-2:#2B3139; --line-c:#252A32; --grid-c:#FFFFFF;
+  --ink:#ECEFF3; --t2:#C3C9D3; --t3:#9CA5B3; --t4:#828C9C; --on:#07080A;
+  --pink:#FF2FB0; --cyan:#00E5FF; --orange:#FF7A1A; --yellow:#FFD400; --green:#00FFA3; --red:#FF5C7A;
+  --on-pink:#12030C; --on-cyan:#001418;
+  --dim:rgba(4,5,7,.76); --glass:rgba(9,10,13,.78);
+  --shadow:0 1px 0 rgba(255,255,255,.03) inset,0 26px 50px -30px rgba(0,0,0,.95);
+  --join-bg:#13161B; --join-ink:#ECEFF3; --join-t2:#AEB6C2;
+  color-scheme:dark}
+
+/* the chains in the agent network */
+:root{--cblue:#1F5FC4;--mid-c:#FFFFFF;--strike-c:#26FAB0}
+/* Midnight in white and Strike in its green, each on a dark tile so both read on the light theme too */
+.mn .vb.dk{background:#0E1014}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--cblue:#5B8EF0}}
+:root[data-theme="dark"]{--cblue:#5B8EF0}

@@ -164,9 +164,9 @@ export function hedger({ mandate, symbol, strike, check = defaultCheck, log = ()
       settle();
       return { placed: false, dust: true };
     }
-    // the hedge brings net delta toward zero and never across it: the dust in the inventory is not hedged
+    // the hedge brings net delta toward zero and at most one step across it: a hedge one step short would leave the fill open
     const net = s.midnightInventoryBtc + s.strikePositionBtc + inflight;
-    const most = Math.sign(need) === Math.sign(net) ? Math.min(Math.abs(need), Math.abs(net)) : Math.abs(need);
+    const most = Math.sign(need) === Math.sign(net) && Math.abs(net) < Math.abs(need) - stepBtc + 1e-12 ? Math.abs(net) : Math.abs(need);
     const sizeBtc = r8(Math.floor(most / stepBtc + 1e-9) * stepBtc);
     if (sizeBtc * strike.mark() < minNotionalUsd) {
       log({ kind: "carry.small", agent: mandate.agentId, unhedgedBtc: need, minNotionalUsd });
@@ -290,7 +290,7 @@ export function hedger({ mandate, symbol, strike, check = defaultCheck, log = ()
     rehedge: () => { if (exposures.length) log({ kind: "carry", agent: mandate.agentId, unhedgedBtc: s.unhedgedBtc }); return rebalance(); },
     resume() { s.frozen = false; s.frozenReason = null; s.manual = false; log({ kind: "resumed", agent: mandate.agentId }); changed(); },
     get state() { return view(); },
-    get pending() { return [...pending.entries()].map(([id, p]) => ({ clientOrderId: id, side: p.side, sizeBtc: p.sizeBtc, filledBtc: p.filledBtc, resting: p.resting, deadline: p.deadline })); },
+    get pending() { return [...pending.entries()].map(([id, p]) => ({ clientOrderId: id, side: p.side, sizeBtc: p.sizeBtc, filledBtc: p.filledBtc, resting: p.resting, deadline: p.deadline, placedAt: p.placedAt })); },
     get exposures() { return exposures.map((e) => ({ fillId: e.fill.id, remaining: e.remaining, at: e.at, coveredBy: covered(e) ? e.coveredBy : null })); },
     get hedges() { return done.slice(); },
     get maxLatencyMs() { return done.reduce((m, h) => Math.max(m, h.latencyMs), 0); },

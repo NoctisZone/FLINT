@@ -27,6 +27,7 @@ import { liveAttempts } from "../agents/rogue.mjs";
  * @param {number} [o.pollEveryRounds]        fill poll cadence in rounds (each poll costs a gateway call per open quote)
  */
 export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.random, books: saved = {}, saveBooks = () => {}, minHedgeUsd = 0 }) {
+  const PENDING_LOOKUP_MS = 10_000;
   const books = new Map(); // agentId → { h (hedger|null), actions: number[] (timestamps), day, equityNow, rogueAt }
   let lastMark = null;
   let lastFunding = null;
@@ -74,13 +75,19 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
     persist(a);
   }
 
-  /** After a stream reconnect: each pending order looked up over REST, then the position Strike reports. */
-  async function resync(a, h) {
+  /** Pending hedges older than `olderThanMs` looked up over REST: a fill or a close the stream missed is applied. */
+  async function syncPending(a, h, olderThanMs = 0) {
     const symbol = a.mandate.strike.markets[0] ?? "BTC-USD";
-    for (const p of h.pending) {
+    for (const p of h.pending.filter((p) => now() - p.placedAt >= olderThanMs)) {
       const o = await a.strike.order({ symbol, clientOrderId: p.clientOrderId });
       await h.syncOrder({ clientOrderId: p.clientOrderId, status: String(o.Status ?? "").toUpperCase(), filledBtc: Number(o.Filled ?? 0), price: Number(o.Filled) > 0 ? Number(o.Price) : null, closeReason: o.CloseReason || null, at: now() });
     }
+  }
+
+  /** After a stream reconnect: each pending order looked up over REST, then the position Strike reports. */
+  async function resync(a, h) {
+    const symbol = a.mandate.strike.markets[0] ?? "BTC-USD";
+    await syncPending(a, h);
     if (a.sharedStrike !== true) {
       const pos = (await a.strike.positions()).positions?.find((x) => x.symbol === symbol);
       await h.onStrikeEvent({ kind: "position", symbol, size: pos ? pos.size : "0", at: now() });
@@ -115,7 +122,7 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
     }
     b.actions.push(now());
     entry(a, { kind: "decision", action, reason, mark: lastMark });
-    feed.decision({ ts, agentId: a.agentId, action: `${action.venue}.${action.kind}`, side: action.side, sizeBtc: action.sizeBtc, price: action.price ?? null, reason });
+    feed.decision({ ts, agentId: a.agentId, action: `${action.venue}.${action.kind}`, side: action.side, sizeBtc: action.sizeBtc, price: action.price ?? null, ...(action.quoteId ? { quoteId: action.quoteId } : {}), reason });
     try {
       const result = await run();
       return { result };
@@ -126,6 +133,7 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
   }
 
   async function makerRound(a, b) {
+    if (a.stopped) return;
     const s = await stateOf(a, b);
     let options = { minQuoteUsd: minHedgeUsd, ...a.options };
     let said = null;
@@ -160,7 +168,7 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
     entry(a, { kind: "look", reason: d.reason, board: board.length });
     if (!d.take) return;
     const q = d.take;
-    const r = await act(a, b, { venue: "midnight", kind: "take", pair: a.venue.pair, side: q.side === "ask" ? "buy" : "sell", sizeBtc: q.sizeBtc, price: q.price }, d.reason, () => a.venue.take(q));
+    const r = await act(a, b, { venue: "midnight", kind: "take", pair: a.venue.pair, side: q.side === "ask" ? "buy" : "sell", sizeBtc: q.sizeBtc, price: q.price, quoteId: q.quoteId }, d.reason, () => a.venue.take(q));
     if (r.result?.landed) feed.quoteGone(q.quoteId);
   }
 
@@ -175,7 +183,10 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
       if (b.h) await b.h.onFill(f);
       else { entry(a, { kind: "fill", ...f }); persist(a); }
     }
-    if (b.h) b.h.tick();
+    if (!b.h) return;
+    // a hedge the stream has said nothing about for a while is asked after over REST, so a missed fill is not a freeze
+    if (a.strike?.order && b.h.pending.length) await syncPending(a, b.h, PENDING_LOOKUP_MS).catch((err) => entry(a, { kind: "hedge.lookup.error", error: err.message.slice(0, 120) }));
+    b.h.tick();
   }
 
   /** The rogue tries one of its attempts a round; the checks refuse it, nothing is ever built. */
@@ -200,14 +211,18 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
     const s = await stateOf(a, b);
     const h = b.h?.state;
     const deltaBtc = (h?.midnightInventoryBtc ?? 0) + (h?.strikePositionBtc ?? 0);
-    const equityUsd = round2(s.holdings.btc * lastMark + s.holdings.usd + (await strikeEquity(a, b)));
+    // coins locked in open quotes leave the wallet's balance until the quote fills or goes; they are still the agent's
+    const reservedUsd = round2(s.open.reduce((sum, q) => sum + (q.side === "ask" ? q.sizeBtc * lastMark : q.sizeBtc * q.price), 0));
+    const equityUsd = round2(s.holdings.btc * lastMark + s.holdings.usd + reservedUsd + (await strikeEquity(a, b)));
     if (b.day.date !== today()) b.day = freshDay(equityUsd);
     if (b.day.equityStartUsd === null) b.day.equityStartUsd = equityUsd;
-    b.equityNow = equityUsd;
+    // a swap in flight leaves the wallet for up to a minute: the loss stop sees the best of the last five readings
+    b.equityWindow = [...(b.equityWindow ?? []), equityUsd].slice(-5);
+    b.equityNow = Math.max(...b.equityWindow);
     persist(a);
     feed.agent(a.agentId, {
-      status: h?.frozen ? "frozen" : b.h?.pending.length ? "hedging" : a.mind === "citizen" ? "watching" : a.mind === "rogue" ? "probing" : "quoting",
-      midnight: { btc: s.holdings.btc, usd: s.holdings.usd, openQuotes: s.open.length },
+      status: a.stopped ? "stopped" : h?.frozen ? (h.manual ? "paused" : "frozen") : b.h?.pending.length ? "hedging" : a.mind === "citizen" ? "watching" : a.mind === "rogue" ? "probing" : "quoting",
+      midnight: { btc: s.holdings.btc, usd: s.holdings.usd, reservedUsd, openQuotes: s.open.length },
       strikePositionBtc: h?.strikePositionBtc ?? 0, netDeltaUsd: round2(deltaBtc * lastMark), unhedgedUsd: round2((h?.unhedgedBtc ?? 0) * lastMark),
       hedges: b.h?.hedges.length ?? 0, maxHedgeLatencySec: b.h ? Math.round(b.h.maxLatencyMs / 100) / 10 : null,
       pending: b.h?.pending.length ?? 0,
@@ -237,17 +252,20 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
 
   let timer = null;
   let running = false;
-  return {
-    round,
+  let current = null; // the round in flight, so stop() does not close wallets under it
+  const guarded = () => { current = round().catch((err) => log({ kind: "gateway.error", error: err.message })); return current; };
+  const this_ = {
+    round: guarded,
     start(roundMs = 20_000) {
       if (running) return;
       running = true;
-      const loop = async () => { if (!running) return; await round().catch((err) => log({ kind: "gateway.error", error: err.message })); timer = setTimeout(loop, roundMs); };
+      const loop = async () => { if (!running) return; await guarded(); timer = setTimeout(loop, roundMs); };
       loop();
     },
     async stop() {
       running = false;
       clearTimeout(timer);
+      await current;
       for (const a of agents) { await a.venue.retireAll().catch(() => {}); a.streamHandle?.close(); }
     },
     /** Hedge what every maker carries from the last run; call once after the mark is known. */
@@ -316,10 +334,37 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
         },
       };
     },
-    freeze: (agentId, reason) => books.get(agentId)?.h?.freeze(reason),
+    freeze: (agentId, reason, opts) => books.get(agentId)?.h?.freeze(reason, opts),
     resume: (agentId) => books.get(agentId)?.h?.resume(),
+    /** The owner stops an agent: frozen by hand, quotes and Strike orders pulled, nothing new until a mandate is signed again. */
+    async stop(agentId, reason = "stopped by the owner") {
+      const a = agents.find((x) => x.agentId === agentId);
+      if (!a) return null;
+      a.stopped = true;
+      books.get(agentId)?.h?.freeze(reason, { manual: true });
+      const r = await this_.portFor(agentId).cancelAll();
+      entry(a, { kind: "stopped", reason, ...r });
+      await card(a, books.get(agentId));
+      return r;
+    },
+    close: (agentId, why = "closed by the owner") => this_.portFor(agentId).closePosition(why),
+    /** A mandate the owner signed anew: in force from the next round; a stop or a hand freeze ends with it. */
+    setMandate(agentId, mandate) {
+      const a = agents.find((x) => x.agentId === agentId);
+      if (!a) return null;
+      a.mandate = mandate;
+      a.signatureOk = true;
+      a.stopped = false;
+      const h = books.get(agentId)?.h;
+      if (h?.state.frozen && h.state.manual) h.resume();
+      entry(a, { kind: "mandate.signed", hash: mandateHash(mandate), expiry: mandate.expiry });
+      feed.agent(agentId, { mandate: mandateCard(mandate) });
+      return mandateHash(mandate);
+    },
+    stateOf: (agentId) => { const h = books.get(agentId)?.h?.state; return { frozen: h?.frozen ?? false, frozenReason: h?.frozenReason ?? null }; },
   };
+  return this_;
 }
 
 const round2 = (x) => Math.round(x * 100) / 100;
-const mandateCard = (m) => ({ hash: mandateHash(m), maxNetDeltaUsd: m.risk.maxNetDeltaUsd, hedgeWithinSec: m.risk.hedgeWithinSec, maxQuoteUsd: m.midnight.maxQuoteUsd, maxPositionUsd: m.strike.maxPositionUsd });
+const mandateCard = (m) => ({ hash: mandateHash(m), maxNetDeltaUsd: m.risk.maxNetDeltaUsd, hedgeWithinSec: m.risk.hedgeWithinSec, maxQuoteUsd: m.midnight.maxQuoteUsd, maxPositionUsd: m.strike.maxPositionUsd, full: m });

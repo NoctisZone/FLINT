@@ -7,6 +7,7 @@
  *   npm run mock-feed [-- --port 4481]
  */
 import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { feedServer, feedState } from "../gateway/feed.mjs";
 
 const portArg = process.argv.indexOf("--port");
@@ -56,6 +57,8 @@ for (const [id, a] of Object.entries(agents)) {
 s.setMark(mark);
 s.setSponsor(true);
 s.setLiquidity("flint testnet liquidity account: stands in for the empty testnet book");
+s.setBoard("server");
+s.setAttestEvery(60_000);
 s.capital({
   balanceUsd: 2272.93, depositedUsd: 2273.06, feesUsd: -0.13, fundingUsd: 0.0019, asOf: iso(),
   trailHash: hex("c0ffee"),
@@ -132,5 +135,5 @@ function tick() {
 }
 tick();
 setInterval(tick, 5000);
-const server = await feedServer(s, { port, host: "0.0.0.0" });
+const server = await feedServer(s, { port, host: "0.0.0.0", staticDir: fileURLToPath(new URL("../arena/", import.meta.url)) });
 console.log(`mock feed on http://localhost:${server.address().port}/feed/{meta,agents,quotes,fills,decisions,refusals,proofs,capital,revenue}`);

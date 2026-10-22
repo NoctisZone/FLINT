@@ -1,15 +1,18 @@
 /**
  * The read-only feed the arena polls: one in-memory state the gateway
  * updates, served as JSON on a few GET routes. Lists are newest first and
- * take `?since=<ISO timestamp>`; nothing here changes anything.
+ * take `?since=<ISO timestamp>`; nothing here changes anything. The same
+ * server hands out the arena page and its files from `staticDir`.
  */
 import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
 
 const KEEP = 2000;
 
 export function feedState({ runStart = new Date().toISOString(), networks = { midnight: "preprod", strike: "testnet" } } = {}) {
   const s = {
-    meta: { runStart, networks, strikeMark: null, sponsorReady: null, strikeLiquidity: null, serverTime: null },
+    meta: { runStart, networks, strikeMark: null, sponsorReady: null, strikeLiquidity: null, midnightBoard: "server", attestEveryMs: null, tools: null, owner: false, serverTime: null },
     agents: new Map(),  // agentId → card
     quotes: new Map(),  // quoteId → open quote
     fills: [], decisions: [], refusals: [], proofs: new Map(),
@@ -21,6 +24,14 @@ export function feedState({ runStart = new Date().toISOString(), networks = { mi
     setSponsor: (ready) => { s.meta.sponsorReady = ready; },
     /** Who stands on the other side of the hedges on a venue without a market maker; null when it is the real book. */
     setLiquidity: (note) => { s.meta.strikeLiquidity = note; },
+    /** Where quotes wait for their taker: "server" (the offer board) or "gateway" (this process hands the halves over). */
+    setBoard: (kind) => { s.meta.midnightBoard = kind; },
+    /** How often a window attestation is made, so the page can count down to the next one. */
+    setAttestEvery: (ms) => { s.meta.attestEveryMs = ms; },
+    /** The public tools endpoint and its x402 prices in lovelace, for the page's "connect an agent". */
+    setTools: (t) => { s.meta.tools = t; },
+    /** Whether /owner/ answers next to the feed. */
+    setOwner: (on) => { s.meta.owner = Boolean(on); },
     agent: (agentId, card) => { s.agents.set(agentId, { agentId, ...(s.agents.get(agentId) ?? {}), ...card }); },
     quoteOpen: (q) => { s.quotes.set(q.quoteId, q); },
     quoteGone: (quoteId) => { s.quotes.delete(quoteId); },
@@ -52,14 +63,35 @@ export function feedState({ runStart = new Date().toISOString(), networks = { mi
   };
 }
 
-/** Serve `state` on /feed/<route>; resolves to the server, `port` 0 picks a free one. */
-export function feedServer(state, { port = 4481, host = "127.0.0.1" } = {}) {
-  const server = http.createServer((req, res) => {
+const TYPES = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".txt": "text/plain; charset=utf-8", ".md": "text/markdown; charset=utf-8" };
+
+/** A file of the arena folder for a request path; null outside the folder or when there is none. `/` is the page. */
+function staticFile(dir, pathname) {
+  const rel = pathname === "/" || pathname === "/index.html" ? "flint.html" : decodeURIComponent(pathname.slice(1));
+  const file = path.resolve(dir, rel);
+  if (!file.startsWith(path.resolve(dir) + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) return null;
+  return { file, type: TYPES[path.extname(file).toLowerCase()] ?? "application/octet-stream" };
+}
+
+/** Serve `state` on /feed/<route> and, with `staticDir`, the arena page at / and its files; resolves to the server, `port` 0 picks a free one. */
+export function feedServer(state, { port = 4481, host = "127.0.0.1", staticDir = null, handlers = [] } = {}) {
+  const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://x");
+    // the owner API and anything else mounted next to the feed takes its paths first
+    for (const h of handlers) { try { if (await h(req, res)) return; } catch (err) { if (!res.headersSent) { res.writeHead(500, { "content-type": "application/json" }); res.end(JSON.stringify({ error: err.message })); } return; } }
     const m = url.pathname.match(/^\/feed\/([a-z]+)$/);
-    const body = req.method === "GET" && m ? state.get(m[1], url.searchParams.get("since")) : null;
-    res.writeHead(body ? 200 : 404, { "content-type": "application/json", "access-control-allow-origin": "*", "cache-control": "no-store" });
-    res.end(JSON.stringify(body ?? { error: "not found" }));
+    if (req.method === "GET" && m) {
+      const body = state.get(m[1], url.searchParams.get("since"));
+      res.writeHead(body ? 200 : 404, { "content-type": "application/json", "access-control-allow-origin": "*", "cache-control": "no-store" });
+      return res.end(JSON.stringify(body ?? { error: "not found" }));
+    }
+    const f = req.method === "GET" && staticDir ? staticFile(staticDir, url.pathname) : null;
+    if (f) {
+      res.writeHead(200, { "content-type": f.type, "cache-control": f.type.startsWith("text/html") ? "no-store" : "public, max-age=3600" });
+      return fs.createReadStream(f.file).pipe(res);
+    }
+    res.writeHead(404, { "content-type": "application/json", "access-control-allow-origin": "*" });
+    res.end(JSON.stringify({ error: "not found" }));
   });
   return new Promise((resolve) => server.listen(port, host, () => resolve(server)));
 }

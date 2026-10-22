@@ -41,7 +41,8 @@ test("round one quotes both sides; the citizen takes the ask; round two sees the
     placeOrder: async (o) => { orders.push(o); return { status: "pending" }; },
     balances: async () => [{ asset: "USDT", walletBalance: "386.05", marginBalance: "386.05" }],
     order: async ({ clientOrderId }) => { lookups.push(clientOrderId); return { ClientOrderID: clientOrderId, Status: "filled", Filled: "0.00187", Price: "80005", CloseReason: "" }; },
-    positions: async () => ({ positions: [{ symbol: "BTC-USD", size: "0.00187" }] }),
+    // every order of the stub fills whole: the position Strike reports is their signed sum
+    positions: async () => ({ positions: [{ symbol: "BTC-USD", size: orders.reduce((sum, o) => sum + (o.side === "buy" ? o.size : -o.size), 0).toFixed(5) }] }),
   };
   const agents = [
     { agentId: "mm-rule", mandate: P["mm-rule"], mind: "maker", venue: venue("mm-rule", { btc: 0.01, usd: 800, spendable: { btc: 0.004, usd: 320 } }), strike, stream: (onEvent, onStatus) => { streamOn = onEvent; streamStatus = onStatus; return { close() {} }; }, wallets: { cardano: "addr_test1qmm", midnight: "hidden" } },
@@ -52,9 +53,14 @@ test("round one quotes both sides; the citizen takes the ask; round two sees the
   const g = gateway({ agents, mark: async () => 80_000, feed, log: (e) => { log.push(e); return e; }, now: () => t, rnd: () => 0, saveBooks: (id, snap) => { saved[id] = snap; } });
   await g.round();
   const card0 = feed.get("agents").agents.find((a) => a.agentId === "mm-rule");
-  assert.deepEqual([card0.wallets, card0.equityUsd, card0.equityStartUsd, card0.pnlPct, card0.day], [{ cardano: "addr_test1qmm", midnight: "hidden" }, 800 + 0.01 * 80_000 + 386.05, 800 + 0.01 * 80_000 + 386.05, 0, "2026-10-22"], "equity: Midnight holdings at the mark plus Strike margin");
+  // the quotes' coins count as the maker's: the ask's tBTC at the mark, the bid's tUSD at its price
+  const reserved = agents[0].venue.openQuotes.reduce((sum, q) => sum + (q.side === "ask" ? q.sizeBtc * 80_000 : q.sizeBtc * q.price), 0);
+  assert.ok(reserved > 0 && Math.abs(card0.midnight.reservedUsd - reserved) < 0.01, "reserved coins on the card");
+  const equity0 = Math.round((800 + 0.01 * 80_000 + reserved + 386.05) * 100) / 100;
+  assert.deepEqual([card0.wallets, card0.equityUsd, card0.equityStartUsd, card0.pnlPct, card0.day], [{ cardano: "addr_test1qmm", midnight: "hidden" }, equity0, equity0, 0, "2026-10-22"], "equity: Midnight holdings and reserved coins at the mark plus Strike margin");
   assert.equal(feed.get("quotes").quotes.length, 1, "the citizen took the ask in the same round, the bid stands");
   assert.deepEqual(feed.get("decisions").decisions.map((d) => d.action), ["midnight.take", "midnight.quote", "midnight.quote"]);
+  assert.equal(feed.get("decisions").decisions[0].quoteId, "q1", "the take names its quote");
   assert.equal(orders.length, 0, "no hedge before the fill is seen");
 
   t = T0 + 20_000;
@@ -103,8 +109,9 @@ test("round one quotes both sides; the citizen takes the ask; round two sees the
   await new Promise((r) => setImmediate(r));
   assert.deepEqual(lookups, [orders[1].clientOrderId]);
   assert.equal(h.pending.length, 0);
-  assert.equal(h.state.strikePositionBtc, 0.00187, "Strike's own position after the resync");
+  assert.equal(h.state.strikePositionBtc, 0.00374, "Strike's own position after the resync: both hedges");
   assert.ok(log.some((e) => e.kind === "stream.resynced"));
+
   await g.stop();
 });
 
@@ -196,3 +203,39 @@ test("Claude's size under Strike's smallest hedge is lifted to that floor, and C
   await g.stop();
 });
 
+
+test("a hedge the stream never reports is looked up over REST after ten seconds: the fill counts, the maker is not frozen", async () => {
+  const { venue } = world();
+  const orders = [];
+  const lookups = [];
+  const strike = {
+    placeOrder: async (o) => { orders.push(o); return { status: "pending" }; },
+    balances: async () => [{ marginBalance: "386.05" }],
+    order: async ({ clientOrderId }) => { lookups.push(clientOrderId); return { ClientOrderID: clientOrderId, Status: "filled", Filled: "0.00187", Price: "80005", CloseReason: "" }; },
+    positions: async () => ({ positions: [] }),
+  };
+  const agents = [
+    { agentId: "mm-rule", mandate: P["mm-rule"], mind: "maker", venue: venue("mm-rule", { btc: 0.01, usd: 800, spendable: { btc: 0.004, usd: 320 } }), strike, stream: () => ({ close() {} }) },
+    { agentId: "citizen-a", mandate: P["citizen-a"], mind: "citizen", side: "buy", venue: venue("citizen-a", { btc: 0, usd: 500, spendable: { btc: 0, usd: 200 } }) },
+  ];
+  let t = T0;
+  const log = [];
+  const g = gateway({ agents, mark: async () => 80_000, feed: feedState({ runStart: "2026-10-22T12:00:00Z" }), log: (e) => { log.push(e); return e; }, now: () => t, rnd: () => 0, saveBooks: () => {} });
+  await g.round();
+  t = T0 + 20_000;
+  await g.round();
+  const h = g.hedgerOf("mm-rule");
+  assert.equal(h.pending.length, 1, "the ask was taken and hedged");
+  assert.deepEqual(lookups, [], "a fresh order is not asked after");
+  t = T0 + 25_000;
+  await g.round();
+  assert.deepEqual([h.pending.length, lookups], [1, []], "five seconds: still the stream's turn");
+  t = T0 + 31_000;
+  await g.round();
+  assert.deepEqual(lookups, [orders[0].clientOrderId], "eleven seconds of silence: asked over REST");
+  assert.equal(h.pending.length, 0);
+  assert.equal(h.state.frozen, false);
+  assert.equal(h.hedges.length, 1);
+  assert.ok(!log.some((e) => e.kind === "hedge.late"));
+  await g.stop();
+});
