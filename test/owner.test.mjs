@@ -35,7 +35,7 @@ function world() {
 }
 
 const sign = (w, text) => { const s = signData(w, Buffer.from(text, "utf8")); return { signature: s.signature, key: s.key }; };
-const PRICING = { feeAda: 20, feeClaudeAda: 40, keyAda: 0, minDepositAda: 500, payTo: "addr_test1vqcz4qxtq37ddr5j7mrz2dr9svhl3gsd6ple3rqq36tg6xgw9ug5m" };
+const PRICING = { feeAda: 20, feeClaudeAda: 40, keyAda: 0, minDepositAda: 500, payTo: cardanoWallet("44".repeat(32)).address };
 
 
 test("a challenge is answered by signData over its message; the session lists the agents that name this owner", async () => {

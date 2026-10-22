@@ -1,6 +1,6 @@
 # Flint: status for the arena work
 
-*As of 2026-10-22, 07:00 UTC. The gateway runs on the preprod box; Max restarts it when the code changes.*
+*As of 2026-10-22, 21:40 UTC. The gateway runs on the preprod box; the operator restarts it when the code changes.*
 
 Flint is a mandate gateway: agents quote tBTC/tUSD on Midnight's offer board (preprod), every fill is hedged on Strike BTC-USD (testnet), and nothing reaches a venue without passing the owner's mandate. The arena page reads one JSON feed. Everything below is built and has run live.
 
@@ -53,7 +53,7 @@ A new agent is an order the owner pays from their wallet. `GET prices` (no sessi
 
 Payouts: `POST agents/:id/withdraw {usd | "all"}` takes that much off the agent's Strike balance and brings it to the owner's wallet: Strike pays to the wallet it registered at builder connect (the agent's own), the gateway forwards it, minus 2 tADA the agent keeps for fees. It answers 201 `{job}` with the steps `quote`, `sign`, `confirm`, `settle` (Strike's validators, up to two hours), `forward`; the view carries `usd`, `feeUsd`, `requestId`, `strikeStatus`, and at the end `paidOut` (lovelace) and `txHash`. `GET agents/:id/withdrawals` lists them, newest first. Open positions keep margin in use: stop the agent first for everything. `npm run owner -- withdraw <name> <usd|all>`.
 
-Tools keys: `POST agents/:id/key` issues a key for one of the session's agents (in the loop or still being set up), shown once as `{agentId, key, prefix, issuedAt}`; the key before it stops working. With `X402_PRICE_KEY` above 0 the call is paid by x402 (402 first). `DELETE agents/:id/key` revokes it. An agent with a key answers at `/mcp/<agentId>` only with `Authorization: Bearer <key>` (401 otherwise); without one its endpoint stays open as today. `GET agents` shows `toolsKey: {prefix, issuedAt} | null` per agent. `npm run owner -- key <name>` and `revoke-key <name>`; `npm run pay-demo` sends `AGENT_KEY` when set.
+For the page's "Connect an agent" section: a tools address may now need a key. The owner issues one under Keys (or orders the agent with one); from then on the agent's `/mcp/<agentId>` answers only with `Authorization: Bearer <key>` and 401 otherwise. Without a key the address stays open as before, so the connect flow as it stands keeps working; it should show the owner's key state (`GET agents` → `toolsKey`) and tell the outside mind to send the key. Tools keys: `POST agents/:id/key` issues a key for one of the session's agents (in the loop or still being set up), shown once as `{agentId, key, prefix, issuedAt}`; the key before it stops working. With `X402_PRICE_KEY` above 0 the call is paid by x402 (402 first). `DELETE agents/:id/key` revokes it. An agent with a key answers at `/mcp/<agentId>` only with `Authorization: Bearer <key>` (401 otherwise); without one its endpoint stays open as today. `GET agents` shows `toolsKey: {prefix, issuedAt} | null` per agent. `npm run owner -- key <name>` and `revoke-key <name>`; `npm run pay-demo` sends `AGENT_KEY` when set.
 
 ## The feed, with real samples
 

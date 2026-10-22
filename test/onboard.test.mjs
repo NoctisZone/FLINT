@@ -10,6 +10,8 @@ import { onboardJob } from "../gateway/onboard-job.mjs";
 import { profiles } from "../agents/profiles.mjs";
 
 const MASTER = "ab".repeat(32);
+// where the set-up fee goes in these tests: a wallet of its own
+const PAY_TO = agentWallet(MASTER, "project").address;
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "flint-onb-"));
 const noSleep = async () => {};
 
@@ -113,7 +115,7 @@ function stand({ accounts, creditAfter = 1, mintFails = 0, paid = null, waitMs =
   const mandate = { ...profiles({ owner, expiry: "2026-10-30T00:00:00Z" })["mm-rule"], agentId: "nova-7" };
   const steps = onboardSteps({
     agentId: "nova-7", index: 5, mandate, wallet: agent, owner,
-    fee: { lovelace: 20_000_000n, to: "addr_test1vqcz4qxtq37ddr5j7mrz2dr9svhl3gsd6ple3rqq36tg6xgw9ug5m", paid }, depositLovelace: 500_000_000n,
+    fee: { lovelace: 20_000_000n, to: PAY_TO, paid }, depositLovelace: 500_000_000n,
     mint: async (spec, amount, index) => { calls.mints.push([spec, Number(amount), index]); if (mintFails-- > 0) throw new Error("Rate limited. Retry after 3 s"); return { status: "succeeded", txHash: "ee".repeat(32) }; },
     mark: async () => 80_000, minQuoteUsd: 100, coins: 2, strike, waitMs,
     open: async () => ({ name: "trader-5" }), register: async (trader, ctx) => { calls.registered = trader.name; ctx.set("toolsKey", "flint_test"); quotes = 1; }, quoted: () => quotes > 0,
@@ -149,7 +151,7 @@ test("an order paid from the wallet: the job waits for the owner's one transacti
     // the payment: built over the owner's CIP-30 UTxOs, two outputs, signed by the owner's key here, submitted, delivered
     const cip30 = [utxoHex({ tx_hash: "ab".repeat(32), tx_index: 0, value: "900000000" }, treasuryWallet(MASTER).addressBytes)];
     const built = await payments.build("nova-7", { utxos: cip30 });
-    assert.deepEqual(built.outputs, [{ to: "addr_test1vqcz4qxtq37ddr5j7mrz2dr9svhl3gsd6ple3rqq36tg6xgw9ug5m", lovelace: "20000000" }, { to: agent.address, lovelace: "505000000" }]);
+    assert.deepEqual(built.outputs, [{ to: PAY_TO, lovelace: "20000000" }, { to: agent.address, lovelace: "505000000" }]);
     assert.equal(built.total, "525000000");
     const body = cborDecode(Buffer.from(built.unsignedTxCbor, "hex")).value[0];
     assert.deepEqual(body.get(1n).map((o) => o[1]), [20_000_000n, 505_000_000n, 900_000_000n - 525_000_000n - 200_000n], "fee, deposit money, change");
