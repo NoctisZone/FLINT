@@ -11,7 +11,7 @@ The page decides where its numbers come from when it loads:
 - served over http(s) without either, it polls `feed/` next to itself. The gateway and the mock feed both serve the page at `/` and their feed under `/feed/`, so `npm run mock-feed` and `npm run gateway` each give a working page.
 - opened as a file, or with `?feed=demo`, it runs its own simulation: made-up numbers in the feed's shape, time running faster than a live run.
 
-Live, the page polls `meta`, `agents`, `quotes`, `fills`, `decisions`, `refusals`, `proofs`, `capital` and `revenue` every five seconds and fills the same state the simulation would. `CONNECT.md` maps every panel to its route and field. The Console's owner actions (sign rules, pause, stop, deposit, withdraw) stay demo actions until an owner API exists; the strip under the top bar says so.
+Live, the page polls `meta`, `agents`, `quotes`, `fills`, `decisions`, `refusals`, `proofs`, `capital` and `revenue` every five seconds and fills the same state the simulation would. `STATUS.md` in the repo root has the feed and the owner API, route by route. The Console's owner actions (sign rules, pause, stop, deposit, withdraw) stay demo actions until an owner API exists; the strip under the top bar says so.
 
 ## Files
 
@@ -19,10 +19,10 @@ Live, the page polls `meta`, `agents`, `quotes`, `fills`, `decisions`, `refusals
 |---|---|
 | `flint.html` | the page |
 | `DESIGN.md` | theme, fonts, layout, components and motion |
-| `CONNECT.md` | how each panel maps to the feed, the tools endpoint and the owner controls the Console needs |
 | `tokens.css` | every colour, font and timing token, light and dark |
 | `fonts/` | Geist and Geist Mono (Vercel, SIL Open Font License 1.1) |
-| `logos/` | the lockups in the top bar and the chain marks |
+| `logos/` | the Flint mark, the lockups in the top bar and the chain marks |
+| `favicon.svg`, `og.png` | the tab icon and the link preview image |
 
 ## Credits
 

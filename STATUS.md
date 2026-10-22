@@ -32,7 +32,7 @@ Routes: `meta`, `agents`, `quotes`, `fills`, `decisions`, `refusals`, `proofs`, 
 
 ## The page
 
-`arena/flint.html` is served by the feed server at `/`: `https://agentic.demo.odatano.dev/flint/` over the mock, `https://agentic.demo.odatano.dev/flint-live/` over the running gateway (trailing slash: the page loads `feed/…` and `logos/…` relative to itself). It polls every five seconds and maps the routes below into its own state; `arena/CONNECT.md` is the map. Opened from a file it simulates. One owner view holds the agents (trades, rules, money with payouts, keys), a new agent (ordered and paid from the wallet) and connecting an outside agent, all live over the owner API; a further deposit into a running agent is still to come.
+`arena/flint.html` is served by the feed server at `/`: `https://agentic.demo.odatano.dev/flint/` over the mock, `https://agentic.demo.odatano.dev/flint-live/` over the running gateway (trailing slash: the page loads `feed/…` and `logos/…` relative to itself). It polls every five seconds and maps the routes below into its own state. Opened from a file it simulates. One owner view holds the agents (trades, rules, money with payouts, keys), a new agent (ordered and paid from the wallet) and connecting an outside agent, all live over the owner API; a further deposit into a running agent is still to come.
 
 ## The owner API
 
