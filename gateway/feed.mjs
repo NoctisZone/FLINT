@@ -12,7 +12,7 @@ const KEEP = 2000;
 
 export function feedState({ runStart = new Date().toISOString(), networks = { midnight: "preprod", strike: "testnet" } } = {}) {
   const s = {
-    meta: { runStart, networks, strikeMark: null, sponsorReady: null, strikeLiquidity: null, midnightBoard: "server", attestEveryMs: null, tools: null, owner: false, serverTime: null },
+    meta: { runStart, networks, strikeMark: null, sponsorReady: null, strikeLiquidity: null, midnightBoard: "server", attestEveryMs: null, tools: null, owner: false, orders: null, marks: [], serverTime: null },
     agents: new Map(),  // agentId → card
     quotes: new Map(),  // quoteId → open quote
     fills: [], decisions: [], refusals: [], proofs: new Map(),
@@ -20,7 +20,8 @@ export function feedState({ runStart = new Date().toISOString(), networks = { mi
   };
   const push = (list, item) => { list.unshift(item); if (list.length > KEEP) list.length = KEEP; };
   return {
-    setMark: (mark) => { s.meta.strikeMark = mark; },
+    /** The mark now, and the last two hours of marks for a chart that is full on the first poll. */
+    setMark: (mark) => { s.meta.strikeMark = mark; if (typeof mark === "number" && mark > 0) { s.meta.marks.push({ t: new Date().toISOString(), p: mark }); if (s.meta.marks.length > 240) s.meta.marks.shift(); } },
     setSponsor: (ready) => { s.meta.sponsorReady = ready; },
     /** Who stands on the other side of the hedges on a venue without a market maker; null when it is the real book. */
     setLiquidity: (note) => { s.meta.strikeLiquidity = note; },
@@ -32,6 +33,8 @@ export function feedState({ runStart = new Date().toISOString(), networks = { mi
     setTools: (t) => { s.meta.tools = t; },
     /** Whether /owner/ answers next to the feed. */
     setOwner: (on) => { s.meta.owner = Boolean(on); },
+    /** What a new agent costs its owner: fee by mind, tools key, the smallest deposit, where the fee goes; null when orders are off. */
+    setOrders: (o) => { s.meta.orders = o; },
     agent: (agentId, card) => { s.agents.set(agentId, { agentId, ...(s.agents.get(agentId) ?? {}), ...card }); },
     quoteOpen: (q) => { s.quotes.set(q.quoteId, q); },
     quoteGone: (quoteId) => { s.quotes.delete(quoteId); },

@@ -179,11 +179,40 @@ export function signTransaction(txCborHex, wallet) {
 }
 
 /**
- * A plain ADA transfer from `wallet` to `to`, with a fixed fee and the change
- * back to the wallet; no TTL, no metadata. `utxos` as Koios returns them.
+ * A signed transaction from an unsigned one and the witness set a CIP-30
+ * wallet returns from `signTx`: the wallet's vkey witnesses join the set.
  */
-export function buildTransfer({ wallet, utxos, to, lovelace, feeLovelace = 200_000n }) {
-  const need = BigInt(lovelace) + feeLovelace;
+export function withWitnesses(txCborHex, witnessSetHex) {
+  const tx = cborDecode(Buffer.from(txCborHex, "hex"));
+  if (!tx.items || tx.items.length < 2) throw new Error("not a transaction: expected [body, witnesses, ...]");
+  const [body, witnesses, isValid, aux] = tx.items;
+  const added = cborDecode(Buffer.from(witnessSetHex, "hex")).value;
+  if (!(added instanceof Map)) throw new Error("not a witness set");
+  const set = witnesses.value instanceof Map ? new Map(witnesses.value) : new Map();
+  for (const [k, v] of added) set.set(k, k === 0n ? [...(set.get(0n) ?? []), ...v] : v);
+  const parts = [Uint8Array.from(head(4, tx.items.length)), body.raw, cborEncode(set)];
+  if (isValid) parts.push(isValid.raw);
+  if (aux) parts.push(aux.raw);
+  return { cborHex: Buffer.concat(parts.map((p) => Buffer.from(p))).toString("hex"), txHash: Buffer.from(blake2b(body.raw, { dkLen: 32 })).toString("hex") };
+}
+
+/** A CIP-30 `TransactionUnspentOutput` (hex) as Koios shapes it; `assets` says it carries tokens too. */
+export function decodeUtxoHex(hex) {
+  const [[hash, index], [address, amount]] = cborDecode(Buffer.from(hex, "hex")).value;
+  const coin = Array.isArray(amount) ? amount[0] : amount;
+  return { tx_hash: Buffer.from(hash).toString("hex"), tx_index: Number(index), value: String(coin), address: bech32.encode((address[0] & 0x0f) === 1 ? "addr" : "addr_test", bech32.toWords(Uint8Array.from(address)), 200), assets: Array.isArray(amount) };
+}
+
+/**
+ * A plain ADA transfer from `from` as unsigned CBOR: one output (`to`,
+ * `lovelace`) or several (`outputs: [{ to, lovelace }]`), a fixed fee and
+ * the change back to `from`; no TTL, no metadata. `utxos` as Koios returns
+ * them. Signed by the sender's wallet or by a CIP-30 `signTx`.
+ */
+export function buildUnsignedTransfer({ from, utxos, to, lovelace, outputs: given, feeLovelace = 200_000n }) {
+  const fromBytes = typeof from === "string" ? addressBytesOf(from) : from;
+  const outs = (given ?? [{ to, lovelace }]).map((o) => [addressBytesOf(o.to), BigInt(o.lovelace)]);
+  const need = outs.reduce((s, o) => s + o[1], 0n) + feeLovelace;
   const picked = [];
   let sum = 0n;
   for (const u of [...utxos].sort((a, b) => (BigInt(b.value) > BigInt(a.value) ? 1 : -1))) {
@@ -193,16 +222,21 @@ export function buildTransfer({ wallet, utxos, to, lovelace, feeLovelace = 200_0
   }
   if (sum < need) throw new Error(`not enough ADA: ${Number(sum) / 1e6} on the wallet, ${Number(need) / 1e6} needed`);
   const change = sum - need;
-  const outputs = [[addressBytesOf(to), BigInt(lovelace)]];
-  if (change > 0n) outputs.push([wallet.addressBytes, change]);
-  const body = new Map([
-    [0n, picked.map((u) => [Buffer.from(u.tx_hash, "hex"), BigInt(u.tx_index)])],
-    [1n, outputs],
-    [2n, feeLovelace],
-  ]);
+  const outputs = [...outs];
+  if (change > 0n) outputs.push([fromBytes, change]);
+  const body = new Map([[0n, picked.map((u) => [Buffer.from(u.tx_hash, "hex"), BigInt(u.tx_index)])], [1n, outputs], [2n, feeLovelace]]);
   const bodyRaw = cborEncode(body);
-  const unsigned = Buffer.concat([Buffer.from([0x84]), Buffer.from(bodyRaw), Buffer.from(cborEncode(new Map())), Buffer.from([0xf5, 0xf6])]).toString("hex");
-  return { ...signTransaction(unsigned, wallet), inputs: picked.length, change };
+  const cborHex = Buffer.concat([Buffer.from([0x84]), Buffer.from(bodyRaw), Buffer.from(cborEncode(new Map())), Buffer.from([0xf5, 0xf6])]).toString("hex");
+  return { cborHex, txHash: txHashOf(bodyRaw), inputs: picked.length, change };
+}
+
+/**
+ * A plain ADA transfer from `wallet` to `to`, with a fixed fee and the change
+ * back to the wallet; no TTL, no metadata. `utxos` as Koios returns them.
+ */
+export function buildTransfer({ wallet, utxos, to, lovelace, feeLovelace = 200_000n }) {
+  const u = buildUnsignedTransfer({ from: wallet.addressBytes, utxos, to, lovelace, feeLovelace });
+  return { ...signTransaction(u.cborHex, wallet), inputs: u.inputs, change: u.change };
 }
 
 /** CIP-30 `TransactionUnspentOutput` hex of an ADA-only UTxO, what Strike's build-tx takes. */

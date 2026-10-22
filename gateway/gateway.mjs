@@ -36,7 +36,12 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
   const freshDay = (equityStartUsd = null) => ({ date: today(), equityStartUsd, spreadCapturedUsd: 0, hedgeCostUsd: 0, strikeVolumeUsd: 0, builderFeesUsd: 0, fills: 0, strikeFills: 0 });
   const persist = (a) => { const b = books.get(a.agentId); if (b) saveBooks(a.agentId, { ...(b.h?.snapshot() ?? {}), day: b.day }); };
 
-  for (const a of agents) {
+  const entry = (a, e) => log({ agent: a.agentId, ...e });
+
+  /** One agent into the loop: its books and hedger, its Strike stream, its card. At start for every agent, later for one made at runtime. */
+  function addAgent(a) {
+    if (books.has(a.agentId)) throw new Error(`agent ${a.agentId} is already in the loop`);
+    if (!agents.includes(a)) agents.push(a);
     const { day: savedDay, ...savedBooks } = saved[a.agentId] ?? {};
     const h = a.strike ? hedger({
       mandate: a.mandate, symbol: a.mandate.strike.markets[0] ?? "BTC-USD",
@@ -54,10 +59,11 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
         (x) => { if (x.state === "open" && opens++ > 0) resync(a, h).catch((err) => entry(a, { kind: "stream.resync.failed", error: err.message })); },
       );
     }
-    feed.agent(a.agentId, { agentId: a.agentId, name: a.name ?? a.agentId, type: a.mind === "maker" ? "mm" : a.mind, status: "starting", mandate: mandateCard(a.mandate), wallets: a.wallets ?? null });
+    feed.agent(a.agentId, { agentId: a.agentId, name: a.name ?? a.agentId, type: a.mind === "maker" ? "mm" : a.mind, mind: a.brain ? "claude" : "rules", status: "starting", mandate: mandateCard(a.mandate), wallets: a.wallets ?? null, onboarding: null });
+    return a;
   }
+  for (const a of [...agents]) addAgent(a);
 
-  const entry = (a, e) => log({ agent: a.agentId, ...e });
   const ownOrder = (a, clientOrderId) => typeof clientOrderId === "string" && clientOrderId.startsWith(`${a.agentId}-`);
   const fillCard = (a, e) => ({ ts: new Date(now()).toISOString(), agentId: a.agentId, strikeFill: { side: e.side, size: e.size, price: e.price, clientOrderId: e.clientOrderId } });
   const hedgeCard = (x) => ({ how: x.hedge.how, clientOrderIds: x.hedge.clientOrderIds, price: x.hedge.price, latencySec: Math.round(x.latencyMs / 100) / 10, at: new Date(x.hedge.at).toISOString() });
@@ -226,7 +232,7 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
       strikePositionBtc: h?.strikePositionBtc ?? 0, netDeltaUsd: round2(deltaBtc * lastMark), unhedgedUsd: round2((h?.unhedgedBtc ?? 0) * lastMark),
       hedges: b.h?.hedges.length ?? 0, maxHedgeLatencySec: b.h ? Math.round(b.h.maxLatencyMs / 100) / 10 : null,
       pending: b.h?.pending.length ?? 0,
-      equityUsd, equityStartUsd: b.day.equityStartUsd, pnlPct: b.day.equityStartUsd > 0 ? round2((equityUsd - b.day.equityStartUsd) / b.day.equityStartUsd * 100) : 0,
+      equityUsd, strikeEquityUsd: b.strikeEquity ?? null, equityStartUsd: b.day.equityStartUsd, pnlPct: b.day.equityStartUsd > 0 ? round2((equityUsd - b.day.equityStartUsd) / b.day.equityStartUsd * 100) : 0,
       spreadCapturedUsd: b.day.spreadCapturedUsd, hedgeCostUsd: b.day.hedgeCostUsd, strikeVolumeUsd: b.day.strikeVolumeUsd, builderFeesUsd: b.day.builderFeesUsd,
       day: b.day.date,
     });
@@ -275,6 +281,9 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
       for (const a of agents) { const h = books.get(a.agentId)?.h; if (h) await h.rehedge(); }
     },
     hedgerOf: (agentId) => books.get(agentId)?.h ?? null,
+    /** An agent made while the loop runs: it takes part from the next round on. */
+    addAgent,
+    agentIds: () => agents.map((a) => a.agentId),
     /** One agent's port for the MCP tools: every write goes through the checks like the gateway's own minds. */
     portFor(agentId) {
       const a = agents.find((x) => x.agentId === agentId);
@@ -367,4 +376,4 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
 }
 
 const round2 = (x) => Math.round(x * 100) / 100;
-const mandateCard = (m) => ({ hash: mandateHash(m), maxNetDeltaUsd: m.risk.maxNetDeltaUsd, hedgeWithinSec: m.risk.hedgeWithinSec, maxQuoteUsd: m.midnight.maxQuoteUsd, maxPositionUsd: m.strike.maxPositionUsd, full: m });
+export const mandateCard = (m) => ({ hash: mandateHash(m), maxNetDeltaUsd: m.risk.maxNetDeltaUsd, hedgeWithinSec: m.risk.hedgeWithinSec, maxQuoteUsd: m.midnight.maxQuoteUsd, maxPositionUsd: m.strike.maxPositionUsd, full: m });

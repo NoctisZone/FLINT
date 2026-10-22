@@ -10,11 +10,10 @@
  *   npm run pay-demo -- market <agent>          # a free read
  *
  * BUYER_MNEMONIC in .env (24 words; `npm run pay-demo -- mnemonic` makes one),
- * TOOLS_URL the gateway's tools endpoint (default http://localhost:4483).
+ * TOOLS_URL the gateway's tools endpoint (default http://localhost:4483),
+ * AGENT_KEY the agent's tools key when its owner issued one.
  */
-import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
-import { toClientCardanoSigner } from "@x402/cardano";
-import { ExactCardanoScheme } from "@x402/cardano/exact/client";
+import { paidFetch } from "../lib/paid-fetch.mjs";
 
 const [cmd, agent = "mm-rule", side = "ask", sizeBtc = "0.0012", price] = process.argv.slice(2);
 const TOOLS = (process.env.TOOLS_URL || "http://localhost:4483").replace(/\/+$/, "");
@@ -28,17 +27,14 @@ if (cmd === "mnemonic") {
 }
 const mnemonic = process.env.BUYER_MNEMONIC;
 if (!mnemonic) { console.error("BUYER_MNEMONIC is not set"); process.exit(2); }
-const provider = { koios: { baseUrl: process.env.KOIOS_URL || "https://preprod.koios.rest/api/v1" } };
-const signer = toClientCardanoSigner({ mnemonic, network, provider });
-if (cmd === "address") { console.log(signer.getAddress()); process.exit(0); }
-
-// lovelace is not one of the client's USD-pegged default assets: spend controls off
-const client = x402Client.fromConfig({ schemes: [{ network: "cardano:*", client: new ExactCardanoScheme(signer) }], spendControls: false });
-const fetchPaid = wrapFetchWithPayment(fetch, client);
+const { fetch: fetchPaid, address } = paidFetch({ mnemonic, network, koiosUrl: process.env.KOIOS_URL || undefined });
+if (cmd === "address") { console.log(address); process.exit(0); }
+// an agent whose owner issued a tools key: AGENT_KEY opens its endpoint
+const keyHeader = process.env.AGENT_KEY ? { authorization: `Bearer ${process.env.AGENT_KEY}` } : {};
 
 async function call(name, args = {}, { paid = false } = {}) {
   const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } });
-  const headers = { "content-type": "application/json", accept: "application/json, text/event-stream" };
+  const headers = { "content-type": "application/json", accept: "application/json, text/event-stream", ...keyHeader };
   const res = await (paid ? fetchPaid : fetch)(`${TOOLS}/mcp/${agent}`, { method: "POST", headers, body });
   const text = await res.text();
   const line = text.split("\n").find((l) => l.startsWith("data:"));
@@ -50,7 +46,7 @@ async function call(name, args = {}, { paid = false } = {}) {
   return content ? JSON.parse(content) : json;
 }
 
-log(`buyer ${signer.getAddress()} on ${network}, tools at ${TOOLS}, agent ${agent}`);
+log(`buyer ${address} on ${network}, tools at ${TOOLS}, agent ${agent}`);
 if (cmd === "market") { console.log(JSON.stringify(await call("get_market"), null, 1).slice(0, 800)); process.exit(0); }
 if (cmd === "quote") {
   const m = await call("get_market");

@@ -204,6 +204,34 @@ test("Claude's size under Strike's smallest hedge is lifted to that floor, and C
 });
 
 
+test("an agent added after two rounds quotes in the next one; its card appears, its stream opens, the same id twice is refused", async () => {
+  const { venue } = world();
+  const feed = feedState();
+  const agents = [{ agentId: "citizen-a", mandate: P["citizen-a"], mind: "citizen", side: "buy", venue: venue("citizen-a", { btc: 0, usd: 500, spendable: { btc: 0, usd: 200 } }) }];
+  let t = T0;
+  const g = gateway({ agents, mark: async () => 80_000, feed, log: (e) => e, now: () => t, rnd: () => 1 });
+  await g.round();
+  t += 20_000;
+  await g.round();
+  assert.deepEqual(g.agentIds(), ["citizen-a"]);
+  assert.equal(feed.get("quotes").quotes.length, 0, "nobody quotes yet");
+  let streams = 0;
+  const nova = { agentId: "nova-7", name: "NOVA-7", mandate: { ...P["mm-rule"], agentId: "nova-7" }, mind: "maker", venue: venue("nova-7", { btc: 0.01, usd: 800, spendable: { btc: 0.004, usd: 320 } }), strike: { placeOrder: async () => ({ status: "pending" }) }, stream: () => { streams++; return { close() {} }; }, wallets: { cardano: "addr_test1qnova", midnight: "hidden" } };
+  g.addAgent(nova);
+  assert.deepEqual(g.agentIds(), ["citizen-a", "nova-7"]);
+  assert.equal(streams, 1, "its Strike stream is open");
+  const card0 = feed.get("agents").agents.find((a) => a.agentId === "nova-7");
+  assert.deepEqual([card0.name, card0.type, card0.status, card0.wallets.cardano, card0.onboarding], ["NOVA-7", "mm", "starting", "addr_test1qnova", null]);
+  assert.throws(() => g.addAgent(nova), /already in the loop/);
+  t += 20_000;
+  await g.round();
+  assert.equal(feed.get("quotes").quotes.filter((q) => q.agentId === "nova-7").length, 2, "both sides quoted in the round after it joined");
+  const card = feed.get("agents").agents.find((a) => a.agentId === "nova-7");
+  assert.deepEqual([card.status, card.mandate.hash.length], ["quoting", 64]);
+  assert.ok(g.portFor("nova-7"));
+  await g.stop();
+});
+
 test("a hedge the stream never reports is looked up over REST after ten seconds: the fill counts, the maker is not frozen", async () => {
   const { venue } = world();
   const orders = [];

@@ -126,6 +126,10 @@ export function strikeClient({ baseUrl = TESTNET, privateKeyHex, builderFeeBps, 
     depositQuote: (body) => call("POST", "/v2/deposit/quote", { auth: true, body }),
     depositBuildTx: (body) => call("POST", "/v2/deposit/build-tx", { auth: true, body }),
     depositConfirm: (body) => call("POST", "/v2/deposit", { auth: true, body }),
+    /** Withdrawals to the account's registered wallet: the quote (message and Cardano tx to sign), the confirm, the limits. */
+    withdrawQuote: (body) => call("POST", "/v2/withdraw/quote", { auth: true, body }),
+    withdrawConfirm: (body) => call("POST", "/v2/withdraw", { auth: true, body }),
+    withdrawLimits: ({ chain = "cardano", asset = "ADA" } = {}) => call("GET", `/v2/withdraw/limits${query({ chain, asset })}`, { auth: true }),
 
     /**
      * Accepted (201, status pending) is not filled: the engine answers on the

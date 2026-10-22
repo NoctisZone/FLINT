@@ -9,12 +9,13 @@
  * or the index given as `name:i`; its Strike key is STRIKE_KEY_<AGENT>
  * (mm-rule → STRIKE_KEY_MM_RULE), or STRIKE_KEY. The rogue (`rogue:4`) needs
  * a wallet but no coins: every attempt is refused before anything is built.
+ * Agents made from the page (data/agents.json) join every run with their
+ * own wallet index and their owner-signed mandate.
  */
 import fs from "node:fs";
 import path from "node:path";
-import { midnightSeedOf, secretFor } from "../lib/identity.mjs";
-import { cardanoWallet } from "../gateway/cardano.mjs";
-import { loadFactory, settings, tokenTypes } from "../market/chain.mjs";
+import { midnightSeedOf } from "../lib/identity.mjs";
+import { loadFactory, mintTo, settings, tokenTypes } from "../market/chain.mjs";
 import { openMcpTrader } from "../market/mcp-trader.mjs";
 import { strikeClient, TESTNET } from "../gateway/strike.mjs";
 const strikePositions = {};
@@ -22,11 +23,12 @@ import { userStream } from "../gateway/strike-stream.mjs";
 import { midnightVenue } from "../gateway/midnight.mjs";
 import { gatewayBoard } from "../gateway/desk.mjs";
 import { ownerApi } from "../gateway/owner.mjs";
-import { verifySignData } from "../gateway/cardano.mjs";
+import { koios } from "../gateway/cardano.mjs";
+import { odatano } from "../gateway/odatano.mjs";
 import { fileURLToPath } from "node:url";
 import { feedServer, feedState } from "../gateway/feed.mjs";
 import { decisionLog } from "../gateway/log.mjs";
-import { gateway } from "../gateway/gateway.mjs";
+import { gateway, mandateCard } from "../gateway/gateway.mjs";
 import { toolServer } from "../gateway/tools.mjs";
 import { charge } from "../gateway/x402.mjs";
 import { attester, mandateEnvelope, windowEnvelope } from "../gateway/attest.mjs";
@@ -39,6 +41,11 @@ import { verifyLog } from "../gateway/log.mjs";
 import { profiles } from "../agents/profiles.mjs";
 import { claudeMaker } from "../agents/claude-maker.mjs";
 import { fileBudget, fileJournal } from "../market/llm-trader.mjs";
+import { registry, loadSignedMandate, mandateFileOf, saveSignedMandate } from "../gateway/registry.mjs";
+import { accountsFile, agentWallet, onboardSteps, orderPayments, ORDER_STEPS, treasuryWallet } from "../gateway/onboard.mjs";
+import { onboardJob } from "../gateway/onboard-job.mjs";
+import { withdrawSteps, WITHDRAW_STEPS } from "../gateway/withdraw.mjs";
+import { agentKeys } from "../gateway/agent-keys.mjs";
 
 const args = process.argv.slice(2);
 const opt = (name, dflt) => { const i = args.indexOf(`--${name}`); return i < 0 ? dflt : args[i + 1]; };
@@ -53,8 +60,7 @@ for (const a of args.filter((x) => x.startsWith("--"))) if (!["--rounds", "--rou
 if (!["server", "gateway"].includes(boardKind)) { console.error(`--board is server or gateway, not ${boardKind}`); process.exit(2); }
 
 const log = (...x) => console.log(`[${new Date().toISOString().slice(11, 19)}]`, ...x);
-const ACCOUNTS = path.join("data", "strike-accounts.json");
-const strikeAccounts = fs.existsSync(ACCOUNTS) ? JSON.parse(fs.readFileSync(ACCOUNTS, "utf8")) : {};
+const accounts = accountsFile();
 /** Strike's testnet answers 503 now and then; a startup call tries again a few times before giving up. */
 async function patient(what, fn, { tries = 6, waitMs = 10_000 } = {}) {
   for (let i = 1; ; i++) {
@@ -75,50 +81,52 @@ for (const m of Object.values(all)) {
   if (process.env.HEDGE_WITHIN_SEC) m.risk.hedgeWithinSec = Number(process.env.HEDGE_WITHIN_SEC);
   if (process.env.MAX_POSITION_USD && m.strike.maxPositionUsd > 0) m.strike.maxPositionUsd = Number(process.env.MAX_POSITION_USD);
 }
-const MANDATES = path.join("data", "mandates");
 for (const agentId of Object.keys(all)) {
-  const file = path.join(MANDATES, `${agentId}.json`);
-  if (!fs.existsSync(file)) continue;
-  try {
-    const { mandate: m, signature } = JSON.parse(fs.readFileSync(file, "utf8"));
-    const v = verifySignData(signature.signature, signature.key);
-    if (v.ok && Buffer.from(v.payload).toString("utf8") === mandateHash(m) && m.owner === all[agentId].owner && Date.parse(m.expiry) > Date.now()) { all[agentId] = m; log(`${agentId}: owner-signed mandate ${mandateHash(m).slice(0, 12)}… from ${file}`); }
-    else log(`${agentId}: ignoring ${file}: signature, owner or expiry does not hold`);
-  } catch (err) { log(`${agentId}: ignoring ${file}: ${err.message.slice(0, 100)}`); }
+  const s = loadSignedMandate(agentId, { owner: all[agentId].owner });
+  if (!s) continue;
+  if (s.ok) { all[agentId] = s.mandate; log(`${agentId}: owner-signed mandate ${mandateHash(s.mandate).slice(0, 12)}… from ${s.file}`); }
+  else log(`${agentId}: ignoring ${s.file}: ${s.why}`);
 }
 const order = Object.keys(all);
-const minds = { "mm-rule": "maker", "mm-claude": "maker", "citizen-a": "citizen", "citizen-b": "citizen", rogue: "rogue" };
-// the agent's Cardano wallet, as cli/onboard.mjs derives it; its Midnight address stays hidden
-const hex = (u8) => Buffer.from(u8).toString("hex");
-const walletsOf = (agentId) => ({ cardano: cardanoWallet(hex(secretFor(cfg.master, "cardano", agentId)), { stakeSeedHex: hex(secretFor(cfg.master, "cardano-stake", agentId)) }).address, midnight: "hidden" });
+// the built-ins' minds; "claude" is a maker with the Claude brain
+const minds = { "mm-rule": "maker", "mm-claude": "claude", "citizen-a": "citizen", "citizen-b": "citizen", rogue: "rogue" };
 const sides = { "citizen-a": "auto", "citizen-b": "auto" };
+// the agent's Cardano wallet, as cli/onboard.mjs derives it; its Midnight address stays hidden
+const walletsOf = (agentId) => ({ cardano: agentWallet(cfg.master, agentId).address, midnight: "hidden" });
+const reg = registry();
 
 const sharedBoard = boardKind === "gateway" ? gatewayBoard() : null;
-const agents = [];
-for (const spec of names) {
-  const [agentId, given] = spec.split(":");
-  const index = given !== undefined ? Number(given) : order.indexOf(agentId);
-  if (!(agentId in all) || !Number.isInteger(index) || index < 0) { console.error(`unknown agent ${spec}`); process.exit(2); }
-  const mandate = all[agentId];
-  const name = `trader-${index}`;
-  const t0 = Date.now();
-  const trader = await openMcpTrader({ name, seedHex: midnightSeedOf(cfg.master, index), key: cfg.nightgateKey, cfg, index, onProgress: (p) => { if (p.seconds % 30 === 0) log(`${agentId}: wallet syncing, ${p.seconds}s`); } });
-  log(`${agentId}: wallet ready in ${Math.round((Date.now() - t0) / 1000)}s`);
+const entries = decisionLog(path.join("data", "decisions.jsonl"));
+const strikeBase = process.env.STRIKE_API_URL || TESTNET;
+
+/**
+ * One agent for the loop: its MCP server (opened here unless `trader` is
+ * handed in), its Midnight venue, its Strike client from its own account
+ * or the shared key, its stream, and the Claude brain for `mind: "claude"`.
+ * Used for every agent at start and for one made from the page.
+ */
+async function buildAgent({ agentId, index, mind, side, mandate, name = agentId, trader = null, signatureOk = true, stopped = false }) {
+  const kind = mind === "claude" ? "maker" : mind;
+  if (!trader) {
+    const t0 = Date.now();
+    trader = await openMcpTrader({ name: `trader-${index}`, seedHex: midnightSeedOf(cfg.master, index), key: cfg.nightgateKey, cfg, index, onProgress: (p) => { if (p.seconds % 30 === 0) log(`${agentId}: wallet syncing, ${p.seconds}s`); } });
+    log(`${agentId}: wallet ready in ${Math.round((Date.now() - t0) / 1000)}s`);
+  }
   const venue = midnightVenue({ trader, agentId, types, ...(sharedBoard ? { board: sharedBoard } : {}), log: (e) => entries.append({ agent: agentId, ...e }) });
-  // an agent that onboarded itself (cli/onboard.mjs) trades on its own Strike account with its builder fee; else the shared key
-  const own = strikeAccounts[agentId];
+  // an agent that onboarded itself trades on its own Strike account with its builder fee; else the shared key
+  const own = accounts.read()[agentId];
   const keyName = `STRIKE_KEY_${agentId.toUpperCase().replace(/-/g, "_")}`;
-  const privateKeyHex = minds[agentId] === "maker" || minds[agentId] === "rogue" ? (own?.apiWalletPrivateKeyHex || process.env[keyName] || process.env.STRIKE_KEY) : null;
+  const privateKeyHex = kind === "maker" || kind === "rogue" ? (own?.apiWalletPrivateKeyHex || process.env[keyName] || process.env.STRIKE_KEY) : null;
   let strike = null, stream = null, keyUsed = privateKeyHex;
   if (privateKeyHex) {
     const builderFeeBps = own ? Math.min(own.feeShareBps ?? 0, Number(process.env.STRIKE_BUILDER_FEE_BPS || own.feeShareBps || 0)) : (process.env.STRIKE_BUILDER_FEE_BPS ? Number(process.env.STRIKE_BUILDER_FEE_BPS) : undefined);
-    strike = strikeClient({ baseUrl: process.env.STRIKE_API_URL || TESTNET, privateKeyHex, builderFeeBps });
+    strike = strikeClient({ baseUrl: strikeBase, privateKeyHex, builderFeeBps });
     if (own) {
       // an own account without balance cannot hedge yet: fall back to the shared key for this run
       await patient(`${agentId}: Strike clock`, () => strike.syncClock());
       const bal = Number((await patient(`${agentId}: Strike balance`, () => strike.balances()))[0]?.walletBalance ?? 0);
       if (bal > 0) log(`${agentId}: own Strike account ${own.accountId} with ${bal} USD, builder ${own.builderCode} at ${builderFeeBps} bps`);
-      else if (process.env.STRIKE_KEY) { log(`${agentId}: own Strike account ${own.accountId} holds 0 USD; using the shared key this run`); keyUsed = process.env.STRIKE_KEY; strike = strikeClient({ baseUrl: process.env.STRIKE_API_URL || TESTNET, privateKeyHex: keyUsed }); }
+      else if (process.env.STRIKE_KEY) { log(`${agentId}: own Strike account ${own.accountId} holds 0 USD; using the shared key this run`); keyUsed = process.env.STRIKE_KEY; strike = strikeClient({ baseUrl: strikeBase, privateKeyHex: keyUsed }); }
       else log(`${agentId}: own Strike account ${own.accountId} holds 0 USD and there is no shared key: hedges will be rejected`);
     }
     await patient(`${agentId}: Strike clock`, () => strike.syncClock());
@@ -129,11 +137,11 @@ for (const spec of names) {
     // the books' Strike position is what Strike says it is, not what an earlier run on another account recorded
     const pos = (await patient(`${agentId}: Strike positions`, () => strike.positions())).positions?.find((p) => p.symbol === "BTC-USD");
     strikePositions[agentId] = pos ? Number(pos.size) : 0;
-  } else if (minds[agentId] === "maker") {
+  } else if (kind === "maker") {
     log(`${agentId}: no Strike key (${keyName} or STRIKE_KEY); it will quote without a hedge and freeze on the first fill`);
   }
   let brain = null;
-  if (agentId === "mm-claude") {
+  if (mind === "claude") {
     if (!process.env.ANTHROPIC_API_KEY) log(`${agentId}: no ANTHROPIC_API_KEY; the rules run it`);
     else {
       const { default: Anthropic } = await import("@anthropic-ai/sdk");
@@ -142,11 +150,30 @@ for (const spec of names) {
   }
   // a citizen looks every round and acts on about half of them; a maker quotes 120 USD a side, above Strike's minimum and inside what a citizen's coins pay
   // the shared key serves every maker without an account of its own: its fills and position are not one agent's
-  agents.push({ agentId, name: agentId, mandate, mind: minds[agentId], side: sides[agentId], venue, strike, stream, sharedStrike: Boolean(keyUsed) && keyUsed === process.env.STRIKE_KEY, wallets: walletsOf(agentId), trader, brain, leverage: mandate.strike.maxLeverage, options: minds[agentId] === "citizen" ? { rate: Number(process.env.CITIZEN_RATE || 0.5) } : { sizeUsd: Number(process.env.MAKER_SIZE_USD || 120) } });
+  return { agentId, name, mandate, mind: kind, side, venue, strike, stream, sharedStrike: Boolean(keyUsed) && keyUsed === process.env.STRIKE_KEY, wallets: walletsOf(agentId), trader, brain, leverage: mandate.strike.maxLeverage, signatureOk, stopped, options: kind === "citizen" ? { rate: Number(process.env.CITIZEN_RATE || 0.5) } : { sizeUsd: Number(process.env.MAKER_SIZE_USD || 120) } };
 }
 
-const entries = decisionLog(path.join("data", "decisions.jsonl"));
-const runStart = entries.append({ kind: "run.start", agents: names, books: {} });
+const agents = [];
+const usedIndexes = order.map((_, i) => i);
+for (const spec of names) {
+  const [agentId, given] = spec.split(":");
+  const index = given !== undefined ? Number(given) : order.indexOf(agentId);
+  if (!(agentId in all) || !Number.isInteger(index) || index < 0) { console.error(`unknown agent ${spec}`); process.exit(2); }
+  usedIndexes.push(index);
+  agents.push(await buildAgent({ agentId, index, mind: minds[agentId], side: sides[agentId], mandate: all[agentId] }));
+}
+// the agents made from the page: always, with their own index; one whose mandate no longer holds waits, stopped, for a new signature
+for (const e of reg.list()) {
+  const s = loadSignedMandate(e.agentId, { owner: e.owner });
+  if (!s?.mandate) { log(`${e.agentId}: registered but no mandate file; skipped`); continue; }
+  if (!s.ok) log(`${e.agentId}: ${s.why}; it waits for its owner to sign again`);
+  else log(`${e.agentId}: owner-signed mandate ${mandateHash(s.mandate).slice(0, 12)}… from ${s.file}, wallet ${e.index}`);
+  try { agents.push(await buildAgent({ agentId: e.agentId, index: e.index, mind: e.mind === "claude" ? "claude" : "maker", side: e.side ?? undefined, mandate: s.mandate, signatureOk: s.ok, stopped: !s.ok })); }
+  catch (err) { log(`${e.agentId}: not started: ${err.message.slice(0, 160)}`); }
+}
+const ids = () => agents.map((a) => a.agentId);
+
+const runStart = entries.append({ kind: "run.start", agents: ids(), books: {} });
 // the hedgers' books outlive a run: unhedged inventory and a freeze are not forgotten on restart
 const BOOKS = path.join("data", "books.json");
 const books = fs.existsSync(BOOKS) ? JSON.parse(fs.readFileSync(BOOKS, "utf8")) : {};
@@ -161,8 +188,29 @@ for (const [id, size] of Object.entries(strikePositions)) {
   b.unhedgedBtc = Math.abs(open) >= 0.00001 ? open : 0;
 }
 runStart.books = structuredClone(books);
-for (const [id, b] of Object.entries(books)) if (names.some((n) => n.split(":")[0] === id)) log(`${id}: books from the last run: inventory ${b.midnightInventoryBtc} BTC, Strike ${b.strikePositionBtc} BTC, unhedged ${b.unhedgedBtc} BTC${b.frozen ? `, frozen (${b.frozenReason})` : ""}`);
+for (const [id, b] of Object.entries(books)) if (ids().includes(id)) log(`${id}: books from the last run: inventory ${b.midnightInventoryBtc} BTC, Strike ${b.strikePositionBtc} BTC, unhedged ${b.unhedgedBtc} BTC${b.frozen ? `, frozen (${b.frozenReason})` : ""}`);
 const feed = feedState();
+const jobs = new Map(); // agentId → onboarding job, for the owner API below and the loop that fills it in
+const keys = agentKeys();
+const SESSIONS = path.join("data", "owner-sessions.json");
+// x402: the tools that act on a venue cost one payment each, the reads are free; a new agent's deposit and a tools key are priced too (0 = free)
+const x402 = process.env.X402_FACILITATOR_URL ? { facilitatorUrl: process.env.X402_FACILITATOR_URL, facilitatorKey: process.env.X402_FACILITATOR_KEY || "", payTo: process.env.X402_PAY_TO || "", network: process.env.X402_NETWORK || "cardano:preprod", asset: "lovelace" } : null;
+const PAID = { post_quote: "1000000", take_quote: "1000000", place_order: "1000000", hedge: "2000000" };
+const prices = Object.fromEntries(Object.entries(PAID).map(([k, v]) => [k, process.env[`X402_PRICE_${k.toUpperCase()}`] || v]));
+const ownerPrices = { key: process.env.X402_PRICE_KEY || "0" };
+const revenue = { calls: 0, lovelace: 0n };
+/** One x402 payment landed: counted, logged, on the feed. */
+function paidCall(payment, what, agent, extra = {}) {
+  revenue.calls += 1;
+  revenue.lovelace += BigInt(payment.amountUnits ?? 0);
+  entries.append({ kind: "paid", agent, tool: what, txHash: payment.txHash, lovelace: String(payment.amountUnits ?? 0), payer: payment.payerAddr ?? null, ...extra });
+  feed.revenue({ calls: revenue.calls, lovelace: String(revenue.lovelace), payTo: x402.payTo, last: { ts: new Date().toISOString(), tool: what, agent, txHash: payment.txHash, payer: payment.payerAddr ?? null } });
+}
+const ownerUrl = (process.env.PUBLIC_OWNER_URL || `http://localhost:${port}/owner/`).replace(/\/?$/, "/");
+const treasury = treasuryWallet(cfg.master); // the project wallet: where fees go unless X402_PAY_TO says otherwise
+/** What a new agent costs its owner; the fee goes where x402 payments go. */
+const pricing = { feeAda: Number(process.env.SETUP_FEE_ADA ?? 20), feeClaudeAda: Number(process.env.SETUP_FEE_CLAUDE_ADA ?? 40), keyAda: Number(ownerPrices.key) / 1e6, minDepositAda: Number(process.env.MIN_DEPOSIT_ADA ?? 500), payTo: process.env.X402_PAY_TO || treasury.address };
+feed.setOrders({ ...pricing, x402: Boolean(x402) });
 feed.setLiquidity(process.env.STRIKE_LIQUIDITY_NOTE || null);
 feed.setBoard(boardKind);
 log(`midnight board: ${boardKind}`);
@@ -172,22 +220,125 @@ const owner = ownerApi({
   gateway: { freeze: (...x) => g.freeze(...x), resume: (...x) => g.resume(...x), stop: (...x) => g.stop(...x), close: (...x) => g.close(...x), setMandate: (...x) => g.setMandate(...x), stateOf: (...x) => g.stateOf(...x) },
   // the signed mandate outlives the run, and the vault gets its new hash
   onMandate: async (a, sig) => {
-    fs.mkdirSync(MANDATES, { recursive: true });
-    fs.writeFileSync(path.join(MANDATES, `${a.agentId}.json`), JSON.stringify({ mandate: a.mandate, signature: { signature: sig.signature, key: sig.key }, hash: sig.hash, signedAt: new Date().toISOString() }, null, 1));
-    log(`${a.agentId}: mandate signed by its owner, hash ${sig.hash.slice(0, 12)}…`);
+    const file = saveSignedMandate(a.agentId, { mandate: a.mandate, signature: sig, hash: sig.hash });
+    log(`${a.agentId}: mandate signed by its owner, hash ${sig.hash.slice(0, 12)}…, saved to ${file}`);
     anchorMandate(a).catch((err) => log(`${a.agentId}: anchor after signing failed: ${err.message.slice(0, 120)}`));
   },
+  onboarding: { create: (spec) => createAgent(spec), get: (id) => jobs.get(id)?.view() ?? null, retry: async (id) => { const j = jobs.get(id); j.retry().catch(() => {}); await new Promise((r) => setImmediate(r)); return j.view(); } },
+  // the pricing, the payments and the payouts are built a few lines down; the handlers only run once they exist
+  pricing, payments: { build: (...x) => payments.build(...x), submit: (...x) => payments.submit(...x) }, withdrawals: { start: (...x) => withdrawals.start(...x), list: (...x) => withdrawals.list(...x) },
+  keys,
+  // wallet sessions outlive a restart, so the page's owner keeps following its agents (tokens, mode 600)
+  sessionStore: { load: () => (fs.existsSync(SESSIONS) ? JSON.parse(fs.readFileSync(SESSIONS, "utf8")) : []), save: (entries) => { fs.mkdirSync("data", { recursive: true }); fs.writeFileSync(SESSIONS, JSON.stringify(entries), { mode: 0o600 }); } },
+  x402: x402 ? { prices: ownerPrices, charge: (req, res, o) => charge(req, res, { url: `${ownerUrl}agents${o.extra?.what === "key" ? `/${o.extra.agent}/key` : ""}`, ...o, x: x402, onPaid: (p) => paidCall(p, o.extra?.what ?? "owner", o.extra?.agent ?? null) }) } : null,
 });
+if (x402) log(`x402 on: ${Object.entries(prices).map(([k, v]) => `${k} ${Number(v) / 1e6} ADA`).join(", ")}, tools key ${Number(ownerPrices.key) / 1e6} ADA, to ${x402.payTo}`);
 const server = await feedServer(feed, { port, host: "0.0.0.0", staticDir: fileURLToPath(new URL("../arena/", import.meta.url)), handlers: [owner.handle] });
 feed.setOwner(true);
 log(`feed on http://localhost:${server.address().port}/feed/meta`);
-const pub = strikeClient({ baseUrl: process.env.STRIKE_API_URL || TESTNET });
+const pub = strikeClient({ baseUrl: strikeBase });
 const mark = async () => { const p = await pub.markPrice("BTC-USD"); return { mark: Number(p.p), funding: Number(p.r) }; };
 // a quote smaller than Strike's minimum order could never be hedged
 const minHedgeUsd = Number((await patient("Strike market rules", () => pub.market("BTC-USD"))).order_min_notional ?? 0);
 log(`Strike minimum hedge notional: ${minHedgeUsd} USD`);
 
 const g = gateway({ agents, mark, feed, books, saveBooks, minHedgeUsd, log: (e) => { const full = entries.append(e); log(`${e.agent ?? "gateway"}: ${e.kind}${e.rule ? ` ${e.rule}` : ""}${e.reason ? ` — ${e.reason}` : ""}${e.error ? ` — ${e.error}` : ""}`); return full; } });
+
+// a new agent from the page: its onboarding job runs here, one at a time, and is written to data/onboard/<id>.json
+const ONBOARD_DIR = path.join("data", "onboard");
+const chain = process.env.ODATANO_ACCESS_KEY ? odatano({ key: process.env.ODATANO_ACCESS_KEY, baseUrl: process.env.ODATANO_ACCESS_URL || undefined }) : koios();
+const jobFile = (agentId) => path.join(ONBOARD_DIR, `${agentId}.json`);
+// mints are sponsored one after the other: two orders at once take turns
+let mintTurn = Promise.resolve();
+const mintInTurn = (spec, amount, i) => { const run = mintTurn.then(() => mintTo(cfg, pkg, spec, amount, i)); mintTurn = run.catch(() => {}); return run; };
+function jobFor({ agentId, index, owner: ownerAddress, mind, spec, payment = null, mandate, saved = null }) {
+  const wallet = agentWallet(cfg.master, agentId);
+  const steps = onboardSteps({
+    agentId, index, mandate, wallet, owner: ownerAddress,
+    fee: { lovelace: BigInt(spec.feeLovelace), to: pricing.payTo, paid: payment }, depositLovelace: BigInt(spec.depositLovelace),
+    mint: mintInTurn,
+    mark: async () => (await mark()).mark, minQuoteUsd: minHedgeUsd,
+    strike: { baseUrl: strikeBase, code: process.env.STRIKE_BUILDER_CODE, feeShareBps: mandate.strike.builderFeeBps || Number(process.env.STRIKE_BUILDER_FEE_BPS || 10), accounts, chain, master: cfg.master, clientOf: (privateKeyHex) => strikeClient({ baseUrl: strikeBase, privateKeyHex }) },
+    // an agent the loop already holds (after a restart) keeps its open wallet: two servers never open one wallet
+    open: async () => agents.find((a) => a.agentId === agentId)?.trader ?? openMcpTrader({ name: `trader-${index}`, seedHex: midnightSeedOf(cfg.master, index), key: cfg.nightgateKey, cfg, index, onProgress: (p) => { if (p.seconds % 30 === 0) log(`${agentId}: wallet syncing, ${p.seconds}s`); } }),
+    register: async (trader, ctx) => {
+      if (!ids().includes(agentId)) {
+        const a = await buildAgent({ agentId, index, mind: mind === "claude" ? "claude" : "maker", mandate, trader });
+        g.addAgent(a);
+        anchorMandate(a).catch((err) => log(`${agentId}: mandate anchor failed: ${err.message.slice(0, 120)}`));
+      }
+      if (!reg.get(agentId)) reg.add({ agentId, index, mind, side: null, owner: ownerAddress, pay: spec.pay, feeLovelace: String(spec.feeLovelace), depositLovelace: String(spec.depositLovelace), ...(payment ? { payment: { txHash: payment.txHash, lovelace: String(payment.amountUnits ?? 0), payer: payment.payerAddr ?? null } } : {}), mandateFile: mandateFileOf(agentId), createdAt: new Date().toISOString(), strike: { accountId: accounts.read()[agentId]?.accountId ?? null } });
+      // its first tools key when ordered, for the mind that will drive it; the owner reads it once from the job
+      if (spec.toolsKey !== false && !keys.has(agentId)) ctx.set("toolsKey", keys.issue(agentId).key);
+    },
+    quoted: () => feed.get("quotes").quotes.some((q) => q.agentId === agentId),
+    log: (e) => entries.append(e),
+  });
+  const j = onboardJob({
+    agentId, index, owner: ownerAddress, mind, order: ORDER_STEPS, spec, steps, saved,
+    save: (job) => { fs.mkdirSync(ONBOARD_DIR, { recursive: true }); fs.writeFileSync(jobFile(agentId), JSON.stringify(job, null, 1), { mode: 0o600 }); },
+    // the Arena sees the newcomer from the first step on; once the job is through, the card is the loop's
+    onChange: (job) => {
+      const cur = job.steps.find((s) => s.status !== "done") ?? job.steps.at(-1);
+      const onboarding = job.status === "done" ? null : { status: job.status, step: cur.step, stepStatus: cur.status, detail: cur.detail, error: job.error };
+      feed.agent(agentId, ids().includes(agentId) ? { onboarding } : { agentId, name: agentId, type: "mm", mind, status: "starting", mandate: mandateCard(mandate), wallets: { cardano: wallet.address, midnight: "hidden" }, onboarding });
+      if (job.status !== "running") log(`${agentId}: order ${job.status}${job.error ? `: ${job.error}` : ""}`);
+    },
+  });
+  jobs.set(agentId, j);
+  return j;
+}
+async function createAgent({ agentId, mind, pay, depositLovelace, feeLovelace, toolsKey, payment = null, owner: ownerAddress, mandate, signature, hash }) {
+  if (!process.env.STRIKE_BUILDER_CODE) throw Object.assign(new Error("STRIKE_BUILDER_CODE is not set on this gateway"), { status: 503 });
+  const index = reg.nextIndex(usedIndexes);
+  saveSignedMandate(agentId, { mandate, signature, hash });
+  const spec = { pay, depositLovelace: String(depositLovelace), feeLovelace: String(feeLovelace), toolsKey };
+  const j = jobFor({ agentId, index, owner: ownerAddress, mind, spec, payment, mandate });
+  log(`${agentId}: new order from ${ownerAddress.slice(0, 16)}…, wallet ${index}, mind ${mind}, deposit ${Number(depositLovelace) / 1e6} tADA, fee ${Number(feeLovelace) / 1e6} tADA ${pay === "x402" ? `paid by x402 (${payment?.txHash?.slice(0, 16) ?? "?"}…)` : "from the owner's wallet"}`);
+  j.run().catch((err) => log(`${agentId}: order: ${err.message}`));
+  await new Promise((r) => setImmediate(r));
+  return j.view();
+}
+const payments = orderPayments({ jobOf: (id) => jobs.get(id) ?? null, chain, log: (e) => entries.append(e) });
+
+// payouts: one job per request, written to data/withdrawals/<agent>-<time>.json, the ones of this run kept in memory
+const WITHDRAW_DIR = path.join("data", "withdrawals");
+const withdrawJobs = new Map(); // agentId → jobs, newest last
+const withdrawals = {
+  async start(agentId, usd) {
+    const a = agents.find((x) => x.agentId === agentId);
+    if (!a?.strike || a.sharedStrike) throw Object.assign(new Error("this agent has no Strike account of its own"), { status: 409 });
+    const mine = withdrawJobs.get(agentId) ?? [];
+    if (mine.some((j) => j.running)) throw Object.assign(new Error("a payout is on its way already"), { status: 409 });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const j = onboardJob({
+      agentId, index: null, owner: a.mandate.owner, mind: null, kind: "withdraw", order: WITHDRAW_STEPS, spec: { usd },
+      steps: withdrawSteps({ agentId, wallet: agentWallet(cfg.master, agentId), owner: a.mandate.owner, strike: a.strike, chain, usd, log: (e) => entries.append(e) }),
+      save: (job) => { fs.mkdirSync(WITHDRAW_DIR, { recursive: true }); fs.writeFileSync(path.join(WITHDRAW_DIR, `${agentId}-${stamp}.json`), JSON.stringify(job, null, 1), { mode: 0o600 }); },
+      onChange: (job) => { if (job.status !== "running") log(`${agentId}: payout ${job.status}${job.error ? `: ${job.error}` : ""}`); },
+    });
+    mine.push(j); withdrawJobs.set(agentId, mine);
+    j.run().catch((err) => log(`${agentId}: payout: ${err.message}`));
+    await new Promise((r) => setImmediate(r));
+    return j.view();
+  },
+  list: (agentId) => (withdrawJobs.get(agentId) ?? []).map((j) => j.view()).reverse(),
+  retry: (agentId) => { const j = (withdrawJobs.get(agentId) ?? []).at(-1); if (!j) throw Object.assign(new Error("no payout to retry"), { status: 404 }); j.retry().catch(() => {}); return j.view(); },
+};
+// jobs a restart cut short come back failed, for their owner to retry
+if (fs.existsSync(ONBOARD_DIR)) {
+  for (const f of fs.readdirSync(ONBOARD_DIR).filter((x) => x.endsWith(".json"))) {
+    try {
+      const saved = JSON.parse(fs.readFileSync(path.join(ONBOARD_DIR, f), "utf8"));
+      if (saved.status === "done") continue;
+      const s = loadSignedMandate(saved.agentId, { owner: saved.owner });
+      if (!s?.mandate) continue;
+      if (!saved.spec) { log(`${saved.agentId}: an order from before orders had a spec; skipped`); continue; }
+      jobFor({ agentId: saved.agentId, index: saved.index, owner: saved.owner, mind: saved.mind, spec: saved.spec, mandate: s.mandate, saved });
+      log(`${saved.agentId}: onboarding was cut short at ${saved.steps.find((x) => x.status !== "done")?.step}; its owner can retry`);
+    } catch (err) { log(`onboard/${f}: ${err.message.slice(0, 100)}`); }
+  }
+}
 
 let stopping = false;
 async function shutdown() {
@@ -198,6 +349,9 @@ async function shutdown() {
   await refreshReconcile().catch((err) => log(`reconcile: ${err.message}`));
   await attestBadges().catch((err) => log(`badges: ${err.message}`));
   for (const a of agents) await a.trader.close().catch(() => {});
+  // a wallet an onboarding job opened but never handed to the loop
+  for (const j of jobs.values()) if (j.ctx.trader && !ids().includes(j.agentId)) await j.ctx.trader.close().catch(() => {});
+  for (const list of withdrawJobs.values()) for (const j of list) if (j.running) log(`${j.agentId}: a payout was under way; its owner can retry`);
   server.close();
   process.exit(0);
 }
@@ -238,11 +392,12 @@ async function anchorMandate(a) {
     try {
       const id = await at.identity();
       const m = mandateEnvelope({ agentId: a.agentId, mandateHash: mandateHash(a.mandate) });
-      const r = await at.attest({ ...m, label: "mandate" });
-      fs.writeFileSync(path.join(attestDir, `${a.agentId}-mandate.json`), JSON.stringify({ mandate: a.mandate, ...r }, null, 1));
+      // the same mandate after a restart is on the vault already: the record is checked, not written again
+      const r = await at.attest({ ...m, label: "mandate" }).catch((err) => { if (/already attested/.test(err.message)) return { status: "succeeded", txHash: null, at: new Date().toISOString(), provingMs: 0, already: true }; throw err; });
+      if (!r.already) fs.writeFileSync(path.join(attestDir, `${a.agentId}-mandate.json`), JSON.stringify({ mandate: a.mandate, ...r }, null, 1));
       const v = r.status === "succeeded" ? await at.verify({ payloadHash: m.payloadHash }).catch((err) => ({ verified: false, error: err.message })) : { verified: false };
       feed.proof(a.agentId, { attesterId: id.attesterId, vault: VAULT, mandate: { payloadHash: m.payloadHash, txHash: r.txHash, status: r.status, verified: v.verified, at: r.at } });
-      log(`${a.agentId}: mandate anchored on the vault: ${r.status}${r.txHash ? ` tx ${r.txHash.slice(0, 16)}…` : ""}, verified ${v.verified}, proving ${Math.round(r.provingMs / 1000)}s`);
+      log(`${a.agentId}: mandate ${r.already ? "already anchored" : "anchored"} on the vault: ${r.status}${r.txHash ? ` tx ${r.txHash.slice(0, 16)}…` : ""}, verified ${v.verified}${r.already ? "" : `, proving ${Math.round(r.provingMs / 1000)}s`}`);
     } catch (err) { log(`${a.agentId}: mandate anchor failed: ${err.message.slice(0, 160)}`); }
   }
 }
@@ -288,7 +443,7 @@ async function attestBadges() {
       const a = agents.find((x) => x.agentId === agentId);
       const r = lastReconcile.get(agentId);
       // the sponsor allows 60 transactions an hour: badges only for a maker that has fills to prove
-      if (!a || !r || minds[agentId] !== "maker" || !(r.counts?.midnightFills > 0)) continue;
+      if (!a || !r || a.mind !== "maker" || !(r.counts?.midnightFills > 0)) continue;
       try {
         const b = await at.badges({ agentId, mandate: a.mandate, mandateHash: mandateHash(a.mandate), runStart: runStart.ts, asOf: r.asOf, claims: r.claims, counts: r.counts });
         fs.writeFileSync(path.join(attestDir, `${agentId}-badges-${b.at.replace(/[:.]/g, "-")}.json`), JSON.stringify(b, null, 1));
@@ -319,7 +474,7 @@ async function refreshReconcile() {
       const r = reconcile({ entries, strikeFills: fills, mandate: a.mandate, startDeltaBtc: (carried.midnightInventoryBtc ?? 0) + (carried.strikePositionBtc ?? 0) });
       report.agents[a.agentId] = { ok: r.ok, counts: r.counts, claims: r.claims, violations: r.violations, maxLatencyMs: r.maxLatencyMs };
       lastReconcile.set(a.agentId, { asOf: report.asOf, claims: r.claims, counts: r.counts });
-      feed.proof(a.agentId, { reconciled: report.asOf, claims: r.claims, violations: r.violations.length, counts: r.counts, logChain: chain.ok ? `${chain.entries} entries, chain intact` : `broken at ${chain.brokenAt}` });
+      feed.proof(a.agentId, { reconciled: report.asOf, claims: r.claims, violations: r.violations, counts: r.counts, logChain: chain.ok ? `${chain.entries} entries, chain intact` : `broken at ${chain.brokenAt}` });
       log(`${a.agentId}: reconcile — ${r.ok ? "0 violations" : `${r.violations.length} violation(s): ${[...new Set(r.violations.map((v) => v.rule))].join(", ")}`}; ${r.counts.midnightFills} Midnight fills, ${r.counts.strikeFills} Strike fills, max fill-to-hedge ${Math.round(r.maxLatencyMs / 100) / 10}s; log ${chain.ok ? "intact" : "BROKEN"}`);
     } catch (err) { log(`${a.agentId}: reconcile: ${err.message}`); }
   }
@@ -333,19 +488,15 @@ await anchorMandates();
 
 // the agents' MCP tools over HTTP: POST /mcp/<agentId>, one stateless transport per request
 if (toolsPort) {
-  // stateless: a fresh server and transport per request, both gone when the response closes
-  const ports = new Map(agents.map((a) => [a.agentId, g.portFor(a.agentId)]));
-  // x402: the tools that act on a venue cost one payment each, the reads are free
-  const x402 = process.env.X402_FACILITATOR_URL ? { facilitatorUrl: process.env.X402_FACILITATOR_URL, facilitatorKey: process.env.X402_FACILITATOR_KEY || "", payTo: process.env.X402_PAY_TO || "", network: process.env.X402_NETWORK || "cardano:preprod", asset: "lovelace" } : null;
-  const PAID = { post_quote: "1000000", take_quote: "1000000", place_order: "1000000", hedge: "2000000" };
-  const prices = Object.fromEntries(Object.entries(PAID).map(([k, v]) => [k, process.env[`X402_PRICE_${k.toUpperCase()}`] || v]));
-  const revenue = { calls: 0, lovelace: 0n };
+  // stateless: a fresh server and transport per request, both gone when the response closes; an agent made meanwhile answers too
+  const portOf = (agentId) => (ids().includes(agentId) ? g.portFor(agentId) : null);
   feed.setTools({ url: process.env.PUBLIC_TOOLS_URL ? `${process.env.PUBLIC_TOOLS_URL}/mcp/` : null, prices, paid: Boolean(x402) });
-  if (x402) log(`x402 on: ${Object.entries(prices).map(([k, v]) => `${k} ${Number(v) / 1e6} ADA`).join(", ")} to ${x402.payTo}`);
   const tools = http.createServer(async (req, res) => {
     const m = req.url.match(/^\/mcp\/([a-z0-9-]+)$/);
-    const port = m && ports.get(m[1]);
+    const port = m && portOf(m[1]);
     if (!port) { res.writeHead(404, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "no such agent" })); return; }
+    // an agent whose owner issued a tools key answers that key alone
+    if (!keys.authorize(m[1], req.headers.authorization)) { res.writeHead(401, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "this agent's tools need its key: Authorization: Bearer <key>" })); return; }
     let parsedBody;
     if (req.method === "POST") {
       let raw = "";
@@ -355,10 +506,7 @@ if (toolsPort) {
       if (x402 && tool && prices[tool]) {
         const paid = await charge(req, res, { url: `${process.env.PUBLIC_TOOLS_URL || `http://localhost:${toolsPort}`}/mcp/${m[1]}`, description: `one ${tool} for ${m[1]}`, amount: prices[tool], x: x402, extra: { tool, agent: m[1] } });
         if (!paid.paid) return;
-        revenue.calls += 1;
-        revenue.lovelace += BigInt(paid.payment.amountUnits ?? prices[tool]);
-        entries.append({ kind: "paid", agent: m[1], tool, txHash: paid.payment.txHash, lovelace: String(paid.payment.amountUnits ?? prices[tool]), payer: paid.payment.payerAddr ?? null });
-        feed.revenue({ calls: revenue.calls, lovelace: String(revenue.lovelace), payTo: x402.payTo, last: { ts: new Date().toISOString(), tool, agent: m[1], txHash: paid.payment.txHash, payer: paid.payment.payerAddr ?? null } });
+        paidCall(paid.payment, tool, m[1]);
       }
     }
     const server = toolServer(port, { name: `flint-${m[1]}` });
@@ -367,7 +515,7 @@ if (toolsPort) {
     try { await server.connect(transport); await transport.handleRequest(req, res, parsedBody); } catch (err) { log(`tools: ${err.message}`); if (!res.headersSent) { res.writeHead(500); res.end(); } }
   });
   await new Promise((r) => tools.listen(toolsPort, "0.0.0.0", r));
-  log(`agent tools on http://localhost:${toolsPort}/mcp/<agentId> for ${[...ports.keys()].join(", ")}`);
+  log(`agent tools on http://localhost:${toolsPort}/mcp/<agentId> for ${ids().join(", ")}`);
 }
 
 if (rounds > 0) {

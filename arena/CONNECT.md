@@ -96,7 +96,7 @@ The Terminal shows one owned agent through the same state, filtered by `agentId`
 
 ## 6. The Console (write side): an owner API
 
-What exists now, under `/owner/` next to the feed (`STATUS.md` has the routes): the wallet session over a challenge, pause, resume, stop, close, and `PUT agents/:id/mandate` with the wallet's `signData` over the mandate hash. The page uses it when it runs live: `LV.connect`, `LV.pause`, `LV.stop`, `LV.close`, `LV.sign` in the live block. Deposit, withdraw, key rotation and setting up a new agent are still demo actions. The table below is the original suggestion.
+What exists now, under `/owner/` next to the feed (`STATUS.md` has the routes): the wallet session over a challenge, pause, resume, stop, close, and `PUT agents/:id/mandate` with the wallet's `signData` over the mandate hash. The page uses it when it runs live: `LV.connect`, `LV.pause`, `LV.stop`, `LV.close`, `LV.sign` in the live block. Setting up a new agent is live too: step 4 signs the mandate the set-up flow builds and posts it (`LV.create`, `POST /owner/agents`), step 5 shows the gateway's onboarding job (`LV.job` polls `GET /owner/agents/:id/onboarding`, `LV.retry` after a failure), step 6 refreshes the session so the new agent is yours in the Terminal (`LV.goLive`). Deposit, withdraw and key rotation are still demo actions. The table below is the original suggestion.
 
 The feed is read-only on purpose. Owner actions need a few authenticated endpoints next to it. A suggestion that fits the code you have:
 

@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import { addressBytesOf, buildTransfer, cardanoWallet, cborDecode, cborEncode, signData, signTransaction, txHashOf, utxoHex, verifySignData } from "../gateway/cardano.mjs";
+import { addressBytesOf, buildTransfer, buildUnsignedTransfer, cardanoWallet, cborDecode, cborEncode, decodeUtxoHex, signData, signTransaction, txHashOf, utxoHex, verifySignData, withWitnesses } from "../gateway/cardano.mjs";
 
 const hex = (u8) => Buffer.from(u8).toString("hex");
 
@@ -103,4 +103,31 @@ test("a base address names the stake key too: 57 bytes, header 0x00, addr_test1q
   const v = verifySignData(s.signature, s.key);
   assert.equal(v.ok, true);
   assert.equal(v.addressBytes.length, 57);
+});
+
+test("a witness set from a wallet joins an unsigned transaction; a CIP-30 UTxO decodes back to Koios shape", () => {
+  const w = cardanoWallet("55".repeat(32), { stakeSeedHex: "66".repeat(32) });
+  const utxos = [{ tx_hash: "ab".repeat(32), tx_index: 0, value: "30000000" }];
+  const u = buildUnsignedTransfer({ from: w.address, utxos, to: cardanoWallet("77".repeat(32)).address, lovelace: 5_000_000n });
+  const signed = signTransaction(u.cborHex, w);
+  // what signTx returns: the witness set alone
+  const witnessSetHex = Buffer.from(cborDecode(Buffer.from(signed.cborHex, "hex")).items[1].raw).toString("hex");
+  const merged = withWitnesses(u.cborHex, witnessSetHex);
+  assert.deepEqual([merged.cborHex, merged.txHash], [signed.cborHex, u.txHash], "merging the wallet's witnesses gives the same signed transaction");
+  assert.throws(() => withWitnesses(u.cborHex, "80"), /not a witness set/);
+  const hex = utxoHex({ tx_hash: "ab".repeat(32), tx_index: 3, value: "1234567" }, w.addressBytes);
+  assert.deepEqual(decodeUtxoHex(hex), { tx_hash: "ab".repeat(32), tx_index: 3, value: "1234567", address: w.address, assets: false });
+  const withAssets = Buffer.from(cborEncode([[Buffer.from("ab".repeat(32), "hex"), 0n], [w.addressBytes, [2_000_000n, new Map()]]])).toString("hex");
+  assert.deepEqual([decodeUtxoHex(withAssets).value, decodeUtxoHex(withAssets).assets], ["2000000", true]);
+});
+
+test("an unsigned transfer with several outputs: fee, two outputs, the change last; too little is refused", () => {
+  const w = cardanoWallet("55".repeat(32));
+  const a = cardanoWallet("77".repeat(32)).address, b = cardanoWallet("88".repeat(32)).address;
+  const utxos = [{ tx_hash: "ab".repeat(32), tx_index: 0, value: "10000000" }, { tx_hash: "ac".repeat(32), tx_index: 2, value: "30000000" }];
+  const u = buildUnsignedTransfer({ from: w.address, utxos, outputs: [{ to: a, lovelace: 5_000_000n }, { to: b, lovelace: 20_000_000n }] });
+  const body = cborDecode(Buffer.from(u.cborHex, "hex")).value[0];
+  assert.deepEqual(body.get(1n).map((o) => o[1]), [5_000_000n, 20_000_000n, 30_000_000n - 25_000_000n - 200_000n]);
+  assert.deepEqual([u.inputs, u.change], [1, 4_800_000n], "the largest UTxO alone covers it");
+  assert.throws(() => buildUnsignedTransfer({ from: w.address, utxos, outputs: [{ to: a, lovelace: 45_000_000n }] }), /not enough ADA/);
 });
