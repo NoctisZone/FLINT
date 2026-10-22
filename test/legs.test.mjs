@@ -77,6 +77,25 @@ test("a maker on BTC-USD and ADA-USD quotes both pairs at their own marks and he
   await g.stop();
 });
 
+test("a citizen taking an ADA quote is checked at ADA's mark, not BTC's", async () => {
+  const taken = [];
+  const ada = { quoteId: "o-ada", pair: "tADA/tUSD", side: "ask", sizeBtc: 564, price: 0.2132, maker: "t-ada1", expiresAt: new Date(T0 + 200_000).toISOString(), offer: "x" };
+  const v = {
+    pair: "tBTC/tUSD", pairs: ["tBTC/tUSD", "tADA/tUSD", "tSOL/tUSD"], openQuotes: [],
+    async board() { return [ada]; }, async pollFills() { return []; }, async retireAll() {},
+    async holdings() { return { btc: 0, usd: 500, coins: { tBTC: 0, tUSD: 4 }, spendable: { btc: 0, usd: 200 }, bases: {} }; },
+    async take(q) { taken.push(q); return { status: "succeeded", txHash: "cd".repeat(32), landed: true }; },
+  };
+  const a = { agentId: "citizen-a", mandate: P["citizen-a"], mind: "citizen", side: "buy", venue: v };
+  const feed = feedState({ runStart: "2026-10-22T12:00:00Z" });
+  const log = [];
+  const g = gateway({ agents: [a], mark: async () => ({ markets: { "BTC-USD": { mark: 80_000 }, "ADA-USD": { mark: 0.2127 } } }), feed, log: (e) => { log.push(e); return e; }, now: () => T0, rnd: () => 0.1 });
+  await g.round();
+  assert.deepEqual(log.filter((e) => e.kind === "refusal"), [], "no refusal: 564 ADA at 0.2132 is 120 USD, inside the 150 USD limit");
+  assert.equal(taken.length, 1);
+  assert.equal(log.find((e) => e.kind === "decision")?.mark, 0.2127);
+});
+
 test("an order on two markets mints coins of both base tokens and tUSD for each, sized at each market's mark", async () => {
   const mints = [];
   const mandate = { ...two, midnight: { ...two.midnight, maxQuoteUsd: 150 } };

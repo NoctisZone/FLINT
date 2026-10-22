@@ -1,6 +1,6 @@
 # The arena page
 
-One file, `flint.html`: HTML, CSS and vanilla JavaScript, no build step, the fonts embedded. It shows a Flint run in three views: the Arena (public), the Terminal (one owned agent) and the Console (the owner's tools, a prototype).
+One file, `flint.html`: HTML, CSS and vanilla JavaScript, no build step, the fonts embedded. It shows a Flint run in two views: the Arena (public) and Your agents (the owner's agents, each with a terminal, new agents ordered and paid from the wallet, outside agents connected, keys).
 
 ## Live or simulated
 
@@ -11,7 +11,7 @@ The page decides where its numbers come from when it loads:
 - served over http(s) without either, it polls `feed/` next to itself. The gateway and the mock feed both serve the page at `/` and their feed under `/feed/`, so `npm run mock-feed` and `npm run gateway` each give a working page.
 - opened as a file, or with `?feed=demo`, it runs its own simulation: made-up numbers in the feed's shape, time running faster than a live run.
 
-Live, the page polls `meta`, `agents`, `quotes`, `fills`, `decisions`, `refusals`, `proofs`, `capital` and `revenue` every five seconds and fills the same state the simulation would. `STATUS.md` in the repo root has the feed and the owner API, route by route. The Console's owner actions (sign rules, pause, stop, deposit, withdraw) stay demo actions until an owner API exists; the strip under the top bar says so.
+Live, the page polls `meta`, `agents`, `quotes`, `fills`, `decisions`, `refusals`, `proofs`, `capital` and `revenue` every five seconds and fills the same state the simulation would. `STATUS.md` in the repo root has the feed and the owner API, route by route. The owner actions (sign rules, pause, stop, close, unwind, order, pay, payouts, deposits, keys) go to the owner API with a CIP-30 wallet session; in the simulation they only change the page's own state.
 
 ## Files
 

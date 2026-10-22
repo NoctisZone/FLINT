@@ -129,14 +129,16 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
     }
   }
 
-  /** The checker's view of one agent right now, on one of its markets (its first by default); limits hold per market. */
-  async function stateOf(a, b, leg = legsOf(b)[0] ?? null) {
+  /**
+   * The checker's view of one agent right now, on one of its markets (its first by default); limits hold per market.
+   * An agent without legs (a citizen) is seen on `pair`, at that pair's market's mark.
+   */
+  async function stateOf(a, b, leg = legsOf(b)[0] ?? null, pair = leg?.pair ?? a.venue.pair) {
     const h = leg?.h?.state ?? null;
-    const pair = leg?.pair ?? a.venue.pair;
     const holdings = await a.venue.holdings(pair);
     const open = a.venue.openQuotes.filter((q) => (q.pair ?? a.venue.pair) === pair);
     return {
-      mandate: a.mandate, signatureOk: a.signatureOk !== false, frozen: legsOf(b).some((l) => l.h?.state.frozen) || (h?.frozen ?? false), now: now(), mark: leg ? markAt(leg.symbol) : markOf(a),
+      mandate: a.mandate, signatureOk: a.signatureOk !== false, frozen: legsOf(b).some((l) => l.h?.state.frozen) || (h?.frozen ?? false), now: now(), mark: leg ? markAt(leg.symbol) : (markAt(marketOfPair(pair)?.symbol) ?? markOf(a)),
       strikePositionBtc: h?.strikePositionBtc ?? 0, leverage: a.leverage ?? a.mandate.strike.maxLeverage,
       midnightInventoryBtc: h ? h.midnightInventoryBtc : 0, unhedgedBtc: h?.unhedgedBtc ?? 0,
       openQuotes: open.length, equityStartUsd: b.day.equityStartUsd ?? 0, equityNowUsd: b.equityNow ?? b.day.equityStartUsd ?? 0,
@@ -148,7 +150,7 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
   /** One action through the checks and, if it passes, to its venue. The action's market or pair picks the leg it is checked against. */
   async function act(a, b, action, reason, run) {
     const leg = (action.symbol && legOfSymbol(b, action.symbol)) || (action.pair && legOfPair(b, action.pair)) || legsOf(b)[0] || null;
-    const s = await stateOf(a, b, leg);
+    const s = await stateOf(a, b, leg, action.pair ?? leg?.pair ?? a.venue.pair);
     const refused = check(action, s);
     const ts = new Date(now()).toISOString();
     if (refused) {

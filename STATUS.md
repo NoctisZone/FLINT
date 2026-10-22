@@ -1,38 +1,41 @@
-# Flint: status for the arena work
+# Flint: handover for the page work
 
-*As of 2026-10-22, 21:40 UTC. The gateway runs on the preprod box; the operator restarts it when the code changes.*
+*As of 2026-10-23, 00:00 CEST. The gateway runs on the preprod box, run 49; the operator restarts it when the code changes. A watch checks it every half hour overnight.*
 
-Flint is a mandate gateway: agents quote tBTC/tUSD, tADA/tUSD or tSOL/tUSD on Midnight's offer board (preprod), every fill is hedged on the matching Strike market (BTC-USD, ADA-USD, SOL-USD, testnet), and nothing reaches a venue without passing the owner's mandate. The arena page reads one JSON feed. Everything below is built and has run live.
+Flint is a mandate gateway: agents quote tBTC/tUSD, tADA/tUSD and tSOL/tUSD on Midnight's offer board (preprod), every fill is hedged on the matching Strike market (BTC-USD, ADA-USD, SOL-USD, testnet), and nothing reaches a venue without passing the owner's mandate. The page reads one JSON feed and talks to the owner API with a CIP-30 wallet. Everything below is built and has run live.
 
-## How to work on the arena
+## Where things are
 
-Make a branch for the UI work (for example `arena`) and build against the mock feed; nothing is public yet, we deploy together tomorrow.
+- Live page: `https://agentic.demo.odatano.dev/flint-live/` (over the running gateway). `?feed=demo` runs the page's own simulation with made-up numbers; `https://agentic.demo.odatano.dev/flint/` serves it over the mock feed.
+- The page is one file, `arena/flint.html`, plus `arena/logos/`, `arena/favicon.svg`, `arena/og.png`. It is deployed by copying; no build step. Opened from a file it simulates.
+- Local: `npm install`, then `npm run mock-feed` (`http://localhost:4481/feed/<route>`, same shape as live, a quote every 5 s, a fill and its hedge every 10 s, a refusal every 20 s). The page handles a failed poll quietly; the gateway restarts when code changes, a restart takes about ten minutes because it writes its badges first.
+- Feed routes: `meta`, `agents`, `quotes`, `fills`, `decisions`, `refusals`, `proofs`, `capital`, `revenue`. Poll every 5 s. `fills`, `decisions`, `refusals` take `?since=<ISO timestamp>` and come newest first. CORS is open.
 
-```bash
-npm install
-npm run mock-feed        # http://localhost:4481/feed/<route>
-```
+## What runs live now
 
-The mock has made-up numbers and goes through the same feed state as the gateway, so every route has the live shape: a new quote every 5 s, a fill and its hedge every 10 s, a refusal every 20 s, a paid call every 50 s. The live gateway serves the same routes on its own port when it runs; the page should handle a failed poll quietly, since the gateway restarts when the code changes. Both are public over https on the demo host: the mock under `/flint/`, the running gateway under `/flint-live/` (full URLs in `local_docs/`).
+- **Three markets.** Each agent trades the markets its owner picked when ordering it, one or all of BTC-USD, ADA-USD, SOL-USD, with a hedger per market and its limits holding on each. The citizens take on every pair. The stand-in liquidity account quotes all three on Strike testnet (`meta.strikeLiquidity` names it).
+- **Quotes on Midnight**: a maker posts a bid and an ask around Strike's mark, each 25 bps off, as proven swap halves on the board. Quotes expire after 5 minutes or are pulled when the mark moves.
+- **Fills and hedges**: a citizen takes a quote, the sponsor pays, the swap lands in 25 to 55 s. The hedge on Strike follows within a second; a thin book makes it rest as a limit, a fill of the other side nets it.
+- **Mandate checks**: nine checks, first failure wins, with rule, limit and attempted value. The rogue agent is refused on 12 attempts for 12 distinct rules.
+- **Freeze and resume**: a late hedge freezes the maker to the side that reduces its delta; the freeze lifts when nothing is left unhedged.
+- **Claude as a maker**: picks spread and size with one sentence, inside the same rules.
+- **Orders from the page**: an owner connects a wallet, picks name, style, mind and markets, signs the rules, pays one transaction (set-up fee plus deposit), and the gateway builds the agent: wallets, Strike account by builder connect, deposit, coins, tools key, first quote. About eight minutes.
+- **Money**: payouts to the owner's wallet capped by Strike's testnet limits (100 ADA an hour, 500 a day), deposits into a running agent, unwind (sell the inventory down, close the hedge, stop).
+- **Keys**: a tools key per agent for the MCP endpoint, rotation of the agent's Strike API key.
+- **Proofs**: the reconciler compares this run's Midnight fills with Strike's fill history and the mandate every five rounds; attestations and badges on Midnight; the decision log is a hash chain, verified from the run's start.
+- **x402 pay-per-call** for outside agents at the tools endpoint, shown on `revenue`.
 
-Routes: `meta`, `agents`, `quotes`, `fills`, `decisions`, `refusals`, `proofs`, `capital`, `revenue`. Poll every 5 s. `fills`, `decisions`, `refusals` take `?since=<ISO timestamp>` and come newest first. CORS is open.
+Live tonight, end to end: an agent on ADA-USD ordered headless (7.5 minutes to its first quote), a 10 USD payout, a 60 tADA deposit, an unwind. Two more owner-made agents from the page exist (`nova-7` on BTC-USD, `t-ada1` on ADA-USD).
 
-## What works, seen live today
+## The page as it is
 
-- **Quotes on Midnight**: a maker posts a bid and an ask around Strike's mark (each 25 bps off it, size 120 USD), as proven swap halves on the board; a half proves in about 5 s. Quotes expire after 5 minutes or are pulled when the mark moves. Spreads are per side everywhere: the mandate's band, the checks, the makers' decisions.
-- **Fills**: a citizen takes a quote, the sponsor pays, the swap lands in 25 to 55 s. The gateway sees the fill on the board row (with the Midnight txHash).
-- **Hedge on fill**: the maker's Strike order follows within a second of the fill being seen. The testnet book is thin, so a market hedge often cancels and rests as a limit; a fill of the other side nets it instead ("netted"). Everything is in the decision log.
-- **Mandate checks and refusals**: nine checks, first failure wins, with rule, limit and attempted value. The rogue agent is refused on 12 attempts for 12 distinct rules (`npm run rogue`).
-- **Freeze and resume**: a hedge not filled in time freezes the maker; frozen, it may only quote the side that reduces its delta; the freeze lifts when nothing is left unhedged.
-- **Claude as a maker**: Haiku picks spread and size with one sentence; it paused itself when net delta neared the limit. Decisions in `decisions` with the sentence as `reason`.
-- **Capital trail**: Strike's deposit record plus the three Cardano transactions behind it (owner → intake, intake → vault, settlement), read from the chain.
-- **Agents onboard themselves to Strike**: own Cardano wallet, builder connect by signature, own Strike account and API key, ADA deposit through Strike's API (Strike's testnet listener had a known issue tonight; they are fixing it).
-- **x402 pay-per-call**: an outside agent paid 1 tADA on preprod for a `post_quote` through the tools endpoint; the payment settled on chain and the quote went through the checks. Shown on `revenue`.
-- **Reconciler**: every five rounds, this run's Midnight fills against Strike's own fill history and the mandate; the four badge claims on `proofs`.
+Two views, switched in the header.
 
-## The page
+**Arena** (public, no wallet): the intro with the agent network (every agent, the gateway, both venues; dots are live actions), the four counters (private trades, hedged on Strike, rule breaks stopped, proofs on Midnight), the lanes (offered, taken, hedged, proved, with the hedge timer and earlier trades), the private book with a market switch (BTC / ADA / SOL) above its chart (Strike price, offers, private trades; the book under it follows the switch), the risk balance per maker, the feed cards (what the agent says, caught by the rules), the proofs panel (attestations and badges), and a ten-stop tour. Dark and light theme.
 
-`arena/flint.html` is served by the feed server at `/`: `https://agentic.demo.odatano.dev/flint/` over the mock, `https://agentic.demo.odatano.dev/flint-live/` over the running gateway (trailing slash: the page loads `feed/…` and `logos/…` relative to itself). It polls every five seconds and maps the routes below into its own state. Opened from a file it simulates. One owner view holds the agents (trades, rules, money with payouts, keys), a new agent (ordered and paid from the wallet) and connecting an outside agent, all live over the owner API, deposits into a running agent and payouts included.
+**Your agents** (wallet): connect Lace or Eternl; the agents whose rules name the address. Tabs: Your agents (cards; a terminal per agent with offers, trades, hedges, decisions, refusals, rules to change and sign again, money with payouts, deposits and unwind, keys; pause, stop, close position; one Strike block per market), New agent (six steps: wallet, name and style with mind and markets, rules with sliders, order and pay, set-up with the nine job steps, go live), Connect an agent (the tools endpoint, the x402 prices, the agent's key state), Keys (tools keys, Strike keys with rotation).
+
+The page keeps its session in storage, survives a gateway restart, and shows the last update time and any poll error on the set-up view.
 
 ## The owner API
 
@@ -151,21 +154,15 @@ A tx hash links to `https://preprod.cexplorer.io/tx/<txHash>`.
 { "calls": 1, "lovelace": "1000000", "payTo": "addr_test1vqcz…ug5m", "last": { "ts": "2026-10-21T19:50:31.767Z", "tool": "post_quote", "agent": "mm-rule", "txHash": "698d603e…", "payer": "addr_test1qrcr…q55a" } }
 ```
 
-## Views the page needs
+## Open now
 
-1. **Leaderboard** from `agents`: equity, PnL, spread captured, hedge cost, net delta, Strike volume, builder fees, status.
-2. **Midnight book** from `quotes`: price, size, expiry countdown, side, maker (ours by name, outside ones as "hidden").
-3. **Fill-to-hedge timeline** from `fills`: each Midnight fill with its `hedge` (how, Strike orders, price, seconds between); a fill without `hedge` yet is pending.
-4. **Decision feed and refusal feed** from `decisions` and `refusals`: the sentence, the rule.
-5. **Agent cards**: Cardano address, Midnight "hidden", mandate hash, the four badges (`proofs[].badges.earned`), attestation link.
-6. **Capital** from `capital`: the deposit and its three hops, balance, fees, funding.
-7. **Revenue** from `revenue`: paid calls, the last payer, the pay-to address.
-
-## Open for tomorrow (gateway side)
-
-- A long unattended run with the three agents, the Claude maker and the rogue, reconciler at 0 violations.
-- Discord: testnet BTC-USD liquidity from Strike; until then our own liquidity account (`npm run liquidity`) stands in, named on `meta.strikeLiquidity`.
+- The first citizen take on ADA and its hedge on ADA-USD have not been watched live yet (a check that refused them was fixed in run 49).
+- A test through Eternl on the page; so far Lace and the headless key.
+- The three-minute video. Scenes in `STRIKE_HACK.MD`.
+- Before the repo goes public: grep it once more (box IPs, long preprod addresses, keys, account ids, names).
+- Mainnet only: the treasury address for `X402_PAY_TO`, the builder fee for outside makers (5 instead of 10 bps), `builderFeeBps` as the cap in the mandate, slippage under half the spread for the makers.
+- Known limits: set-up and payouts take minutes; ADA and SOL books on Strike testnet have other testers in them, BTC is our own stand-in; the terminal's price chart shows the agent's first market.
 
 ## Names
 
-Project and repo: **Flint**. Agents: `mm-rule`, `mm-claude`, `citizen-a`, `citizen-b`, `rogue`. Venues: Midnight preprod (offer board), Strike testnet (BTC-USD perpetual). Tokens on Midnight: tBTC (satoshi units), tUSD (cents); the feed speaks BTC and USD.
+Project and repo: **Flint**. Built-in agents: `mm-rule`, `mm-claude`, `citizen-a`, `citizen-b`, `rogue`; owner-made: `nova-7`, `t-ada1`. Venues: Midnight preprod (offer board), Strike testnet (BTC-USD, ADA-USD, SOL-USD perpetuals). Tokens on Midnight: tBTC (satoshi), tADA (lovelace), tSOL (lamports), tUSD (cents); the feed speaks base units and USD, the size field is `sizeBtc` on every market.
