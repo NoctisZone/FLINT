@@ -20,6 +20,10 @@ npm run gateway -- --agents mm-rule:0,citizen-b:1,citizen-a:2 --rounds 20 --tool
 
 The gateway needs Midnight preprod (an indexer, a node, a proof server on localhost) and a Strike testnet account; `CLAUDE.md` has the details.
 
+## Testnet stand-ins
+
+Strike's testnet BTC-USD book has no market maker: no asks, bids far under the mark. So that hedges can fill, `npm run liquidity` quotes both sides around the mark from a separate Strike account of ours, and the feed says so in `meta.strikeLiquidity`. On mainnet the real book takes that role. The citizens on Midnight are likewise the team's own counterparties. The mandate checks, the hedges and their latency, the reconciler against Strike's fill history and the proofs on Midnight are the real mechanism either way.
+
 ## Layout
 
 ```

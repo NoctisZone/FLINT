@@ -35,14 +35,24 @@ test("round one quotes both sides; the citizen takes the ask; round two sees the
   const orders = [];
   const log = [];
   const feed = feedState({ runStart: "2026-10-22T12:00:00Z" });
-  let streamOn = null;
+  let streamOn = null, streamStatus = null;
+  const lookups = [];
+  const strike = {
+    placeOrder: async (o) => { orders.push(o); return { status: "pending" }; },
+    balances: async () => [{ asset: "USDT", walletBalance: "386.05", marginBalance: "386.05" }],
+    order: async ({ clientOrderId }) => { lookups.push(clientOrderId); return { ClientOrderID: clientOrderId, Status: "filled", Filled: "0.00187", Price: "80005", CloseReason: "" }; },
+    positions: async () => ({ positions: [{ symbol: "BTC-USD", size: "0.00187" }] }),
+  };
   const agents = [
-    { agentId: "mm-rule", mandate: P["mm-rule"], mind: "maker", venue: venue("mm-rule", { btc: 0.01, usd: 800, spendable: { btc: 0.004, usd: 320 } }), strike: { placeOrder: async (o) => { orders.push(o); return { status: "pending" }; } }, stream: (onEvent) => { streamOn = onEvent; return { close() {} }; } },
+    { agentId: "mm-rule", mandate: P["mm-rule"], mind: "maker", venue: venue("mm-rule", { btc: 0.01, usd: 800, spendable: { btc: 0.004, usd: 320 } }), strike, stream: (onEvent, onStatus) => { streamOn = onEvent; streamStatus = onStatus; return { close() {} }; }, wallets: { cardano: "addr_test1qmm", midnight: "hidden" } },
     { agentId: "citizen-a", mandate: P["citizen-a"], mind: "citizen", side: "buy", venue: venue("citizen-a", { btc: 0, usd: 500, spendable: { btc: 0, usd: 200 } }) },
   ];
   let t = T0;
-  const g = gateway({ agents, mark: async () => 80_000, feed, log: (e) => { log.push(e); return e; }, now: () => t, rnd: () => 0 });
+  const saved = {};
+  const g = gateway({ agents, mark: async () => 80_000, feed, log: (e) => { log.push(e); return e; }, now: () => t, rnd: () => 0, saveBooks: (id, snap) => { saved[id] = snap; } });
   await g.round();
+  const card0 = feed.get("agents").agents.find((a) => a.agentId === "mm-rule");
+  assert.deepEqual([card0.wallets, card0.equityUsd, card0.equityStartUsd, card0.pnlPct, card0.day], [{ cardano: "addr_test1qmm", midnight: "hidden" }, 800 + 0.01 * 80_000 + 386.05, 800 + 0.01 * 80_000 + 386.05, 0, "2026-10-22"], "equity: Midnight holdings at the mark plus Strike margin");
   assert.equal(feed.get("quotes").quotes.length, 1, "the citizen took the ask in the same round, the bid stands");
   assert.deepEqual(feed.get("decisions").decisions.map((d) => d.action), ["midnight.take", "midnight.quote", "midnight.quote"]);
   assert.equal(orders.length, 0, "no hedge before the fill is seen");
@@ -61,17 +71,40 @@ test("round one quotes both sides; the citizen takes the ask; round two sees the
   assert.equal(feed.get("quotes").quotes.length, 1, "a second ask would double the unhedged exposure: the maker does not even try");
   assert.equal(feed.get("refusals").refusals.length, 0);
 
-  streamOn({ kind: "fill", clientOrderId: orders[0].clientOrderId, side: "BUY", size: "0.00187", price: "80005", at: T0 + 7_000 });
+  streamOn({ kind: "fill", clientOrderId: "mm-claude-hedge-1-1", side: "SELL", size: "0.5", price: "80005", at: T0 + 6_900 });
+  assert.equal(feed.get("fills").fills.length, 1, "another agent's Strike fill is not on this agent's feed");
+  streamOn({ kind: "fill", clientOrderId: orders[0].clientOrderId, side: "BUY", size: "0.00187", price: "80005", fee: "0.07", builderFee: "0.15", at: T0 + 7_000 });
   assert.equal(h.pending.length, 0);
   assert.equal(h.hedges[0].latencyMs, 6_000);
   assert.equal(h.state.frozen, false);
+  const fills = feed.get("fills").fills;
+  assert.equal(fills.length, 2);
+  assert.deepEqual(fills[1].hedge, { how: "market", clientOrderIds: [orders[0].clientOrderId], price: 80_005, latencySec: 6, at: "2026-10-22T12:00:07.000Z" }, "the Midnight fill carries the hedge that closed it");
+  assert.equal(fills[0].strikeFill.clientOrderId, orders[0].clientOrderId);
   t = T0 + 40_000;
   await g.round();
   const card2 = feed.get("agents").agents.find((a) => a.agentId === "mm-rule");
   assert.deepEqual([card2.status, card2.hedges, card2.netDeltaUsd], ["quoting", 1, 0]);
+  // the ask filled 25 bps over the mark: 0.00187 * 200 = 0.374 captured; the hedge bought 5 USD over the mark plus 0.22 of fees
+  assert.deepEqual([card2.spreadCapturedUsd, card2.hedgeCostUsd, card2.strikeVolumeUsd, card2.builderFeesUsd], [0.37, 0.23, 149.61, 0.15]);
+  assert.deepEqual([saved["mm-rule"].day.spreadCapturedUsd, saved["mm-rule"].day.date, saved["mm-rule"].midnightInventoryBtc], [0.37, "2026-10-22", -0.00187], "the day's figures live in the books next to the hedger's");
   assert.equal(feed.get("decisions").decisions.filter((d) => d.action === "midnight.take").length, 2, "hedged: the ask is requoted and the citizen takes it again");
   assert.equal(feed.get("quotes").quotes.length, 1);
   assert.ok(log.some((e) => e.kind === "hedge.filled"));
+
+  // the stream drops and comes back while a hedge is pending: the order is looked up, its fill applied
+  t = T0 + 60_000;
+  await g.round();
+  assert.equal(h.pending.length, 1, "the requoted ask was taken and hedged again");
+  streamStatus({ state: "open" });
+  assert.deepEqual(lookups, [], "the first open is the connect, nothing to reload");
+  streamStatus({ state: "closed" });
+  streamStatus({ state: "open" });
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(lookups, [orders[1].clientOrderId]);
+  assert.equal(h.pending.length, 0);
+  assert.equal(h.state.strikePositionBtc, 0.00187, "Strike's own position after the resync");
+  assert.ok(log.some((e) => e.kind === "stream.resynced"));
   await g.stop();
 });
 
@@ -125,3 +158,41 @@ test("an agent's port: mandate room, preview, a refused and an accepted quote, a
   assert.equal((await mm.account()).openQuotes.length, 0);
   assert.throws(() => g.portFor("ghost"), /no agent ghost/);
 });
+
+test("the rogue in the loop: one attempt a round, each refused with its rule on the feed, nothing ever built; the card says probing", async () => {
+  const { venue } = world();
+  const feed = feedState();
+  const log = [];
+  const built = [];
+  const v = venue("rogue", { btc: 0, usd: 0, spendable: { btc: 0, usd: 0 } });
+  v.quote = async (q) => { built.push(q); return { quoteId: "never" }; };
+  const agents = [{ agentId: "rogue", mandate: P.rogue, mind: "rogue", venue: v, strike: { placeOrder: async (o) => { built.push(o); return {}; } } }];
+  const g = gateway({ agents, mark: async () => 80_000, feed, log: (e) => { log.push(e); return e; }, now: () => T0 });
+  for (let i = 0; i < 8; i++) await g.round();
+  const refusals = feed.get("refusals").refusals;
+  assert.equal(refusals.length, 8);
+  assert.ok(new Set(refusals.map((r) => r.rule)).size >= 5, refusals.map((r) => r.rule).join(","));
+  assert.ok(refusals.some((r) => r.venue === "strike") && refusals.some((r) => r.venue === "midnight"));
+  assert.deepEqual(built, []);
+  assert.equal(feed.get("decisions").decisions.length, 0);
+  assert.equal(feed.get("agents").agents[0].status, "probing");
+  assert.ok(log.every((e) => e.kind !== "rogue.passed"));
+  await g.stop();
+});
+
+test("Claude's size under Strike's smallest hedge is lifted to that floor, and Claude is told the floor", async () => {
+  const { venue } = world();
+  const feed = feedState();
+  const seen = [];
+  const brain = { decide: async (v) => { seen.push(v); return { pause: false, spreadBps: 40, sizeUsd: 60, reason: "small and wide" }; } };
+  const agents = [{ agentId: "mm-claude", mandate: P["mm-claude"], mind: "maker", brain, venue: venue("mm-claude", { btc: 0.01, usd: 800, spendable: { btc: 0.004, usd: 320 } }), strike: { placeOrder: async () => ({}) } }];
+  const g = gateway({ agents, mark: async () => 80_000, feed, log: (e) => e, now: () => T0, minHedgeUsd: 100 });
+  await g.round();
+  assert.equal(seen[0].mandate.minQuoteUsd, 100);
+  const quotes = feed.get("quotes").quotes;
+  assert.equal(quotes.length, 2);
+  assert.ok(quotes.every((q) => q.sizeBtc * 80_000 >= 100 - 1e-6), "quotes at least the hedge minimum");
+  assert.match(feed.get("decisions").decisions[0].reason, /small and wide/);
+  await g.stop();
+});
+

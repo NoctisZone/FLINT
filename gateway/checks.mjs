@@ -1,8 +1,9 @@
 /**
  * The nine checks every action passes before the gateway builds anything,
  * in a fixed order; the first failure is the refusal, with the rule, the
- * limit and the attempted value. A hedge or close that brings net delta
- * toward zero is always allowed once the mandate itself is valid.
+ * limit and the attempted value. A hedge, close or quote that brings net
+ * delta toward zero skips the size, position, delta, loss and rate limits,
+ * never the price checks: its price must still sit inside the band.
  *
  * Sizes are in BTC, prices and limits in USD. Net delta is the agent's
  * Midnight inventory plus its Strike position, in BTC, signed.
@@ -70,12 +71,7 @@ export function check(a, s) {
   if (a.venue === "strike" && !m.strike.markets.includes(a.symbol)) return refusal("strike.markets", m.strike.markets.join(","), a.symbol ?? "", "market not in the mandate");
   if (a.venue === "midnight" && !m.midnight.pairs.includes(a.pair)) return refusal("midnight.pairs", m.midnight.pairs.join(","), a.pair ?? "", "pair not in the mandate");
   if (!(a.sizeBtc > 0)) return refusal("size", "> 0", a.sizeBtc, "size must be positive");
-  if (reducing) return null;
-  const notional = a.sizeBtc * s.mark;
-  // 3. size
-  if (a.venue === "midnight" && notional > m.midnight.maxQuoteUsd + EPS) return refusal("midnight.maxQuoteUsd", m.midnight.maxQuoteUsd, round(notional), "quote larger than the mandate allows");
-  if (a.venue === "strike" && notional > m.strike.maxPositionUsd + EPS) return refusal("strike.maxPositionUsd", m.strike.maxPositionUsd, round(notional), "order larger than the position cap");
-  // 4. price
+  // 3. price: a Strike limit inside the band; a quote on the right side of the mark, per-side distance inside the spread band
   if (a.venue === "strike" && a.price !== undefined) {
     const offPct = Math.abs(a.price - s.mark) / s.mark * 100;
     if (offPct > m.strike.priceBandPct + EPS) return refusal("strike.priceBandPct", m.strike.priceBandPct, round(offPct, 3), "limit price too far from the Strike mark");
@@ -85,6 +81,11 @@ export function check(a, s) {
     if (spreadBps < m.midnight.minSpreadBps - EPS) return refusal("midnight.minSpreadBps", m.midnight.minSpreadBps, round(spreadBps, 2), "quote inside the minimum spread, or on the wrong side of the mark");
     if (spreadBps > m.midnight.maxSpreadBps + EPS) return refusal("midnight.maxSpreadBps", m.midnight.maxSpreadBps, round(spreadBps, 2), "quote outside the maximum spread");
   }
+  if (reducing) return null;
+  const notional = a.sizeBtc * s.mark;
+  // 4. size
+  if (a.venue === "midnight" && notional > m.midnight.maxQuoteUsd + EPS) return refusal("midnight.maxQuoteUsd", m.midnight.maxQuoteUsd, round(notional), "quote larger than the mandate allows");
+  if (a.venue === "strike" && notional > m.strike.maxPositionUsd + EPS) return refusal("strike.maxPositionUsd", m.strike.maxPositionUsd, round(notional), "order larger than the position cap");
   // 5. Strike position and leverage after the action
   if (a.venue === "strike") {
     const posAfter = Math.abs(s.strikePositionBtc + signedSize(a)) * s.mark;

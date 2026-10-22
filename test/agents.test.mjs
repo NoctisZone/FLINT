@@ -15,7 +15,7 @@ test("flat: a bid and an ask 25 bps either side of the mark, sized by the cap an
     { side: "ask", sizeBtc: 0.00187, price: 80_200, ttlSec: 300 },
     { side: "bid", sizeBtc: 0.00187, price: 79_800, ttlSec: 300 },
   ]);
-  assert.match(d.reason, /quoting ask and bid at 50 bps/);
+  assert.match(d.reason, /quoting ask and bid 25 bps off 80000/);
   const small = makerDecision(view({ holdings: { btc: 0.0005, usd: 50, spendable: { btc: 0.0005, usd: 50 } } }));
   assert.deepEqual(small.quotes.map((q) => [q.side, q.sizeBtc]), [["ask", 0.0005], ["bid", Math.floor(50 / 79_800 * 1e5) / 1e5]]);
   const tooSmall = makerDecision(view({ holdings: { btc: 0.0005, usd: 50, spendable: { btc: 0.0005, usd: 50 } } }), { minQuoteUsd: 100 });
@@ -23,7 +23,7 @@ test("flat: a bid and an ask 25 bps either side of the mark, sized by the cap an
   assert.match(tooSmall.reason, /not enough tBTC for an ask of at least 100 USD; not enough tUSD for a bid/);
 });
 
-test("standing quotes stay while the mark is near; past half the spread they are retired and replaced; near expiry too", () => {
+test("standing quotes stay while the mark is near; past the spread they are retired and replaced; near expiry too", () => {
   const standing = [{ quoteId: "a", side: "ask", price: 80_200, sizeBtc: 0.001, expiresAt: "2026-10-22T12:04:00Z" }, { quoteId: "b", side: "bid", price: 79_800, sizeBtc: 0.001, expiresAt: "2026-10-22T12:04:00Z" }];
   const same = makerDecision(view({ openQuotes: standing, mark: 80_100 }));
   assert.deepEqual([same.retire, same.quotes], [[], []]);
@@ -44,9 +44,11 @@ test("standing quotes stay while the mark is near; past half the spread they are
 
 test("the spread is clamped into the mandate's band and the ttl into its limit", () => {
   const d = makerDecision(view(), { spreadBps: 400, ttlSec: 999 });
-  assert.equal(d.quotes[0].price, 80_400, "100 bps max spread: 50 bps each side");
+  assert.equal(d.quotes[0].price, 80_800, "100 bps max spread per side");
   assert.equal(d.quotes[0].ttlSec, 300);
-  assert.equal(makerDecision(view(), { spreadBps: 1 }).quotes[0].price, 80_048, "min 10 bps plus 2: 6 bps each side");
+  assert.equal(makerDecision(view(), { spreadBps: 1 }).quotes[0].price, 80_200, "25 bps minimum per side");
+  const odd = makerDecision(view({ mark: 80_001.23 }), { spreadBps: 25 });
+  assert.deepEqual(odd.quotes.map((q) => q.price), [80_201.3, 79_801.2], "prices round away from the mark, never inside the spread");
 });
 
 test("a citizen takes the best ask within tolerance when it feels like it and can pay; never its own quote", () => {

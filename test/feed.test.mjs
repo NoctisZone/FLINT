@@ -32,3 +32,14 @@ test("routes answer the state, lists newest first with `since`, unknown routes 4
   assert.equal((await get("/feed/quotes")).body.quotes.length, 0);
   server.close();
 });
+
+test("a Midnight fill learns its hedge later; a Strike fill entry or an unknown quote is left alone", () => {
+  const s = feedState();
+  s.fill({ ts: "2026-10-22T10:01:00Z", quoteId: "q1", agentId: "mm-rule", midnight: { side: "sell", sizeBtc: 0.001, price: 84_200 } });
+  s.fill({ ts: "2026-10-22T10:01:03Z", agentId: "mm-rule", strikeFill: { side: "BUY", size: "0.001", price: "84000", clientOrderId: "mm-rule-hedge-1" } });
+  s.fillHedged("q1", { how: "market", clientOrderIds: ["mm-rule-hedge-1"], price: 84_000, latencySec: 3.1 });
+  s.fillHedged("q9", { how: "netted" });
+  const fills = s.get("fills").fills;
+  assert.deepEqual(fills.map((f) => f.hedge?.how ?? null), [null, "market"]);
+  assert.equal(fills[1].hedge.latencySec, 3.1);
+});

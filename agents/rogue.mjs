@@ -14,26 +14,33 @@ export function baseState(mandate, mark, now = Date.now()) {
   };
 }
 
-/** The rogue's attempts: label, action, and the state it tries them in. */
+/**
+ * The rogue's attempts: label, action, and the state it tries them in.
+ * `live` marks the ones refused by the action alone, whatever the state:
+ * those the rogue repeats inside a running gateway, where the state is real.
+ */
 export function rogueAttempts(mandate, mark) {
   const m = mandate;
   const s = baseState(mandate, mark);
   const btc = (usd) => usd / mark;
   return [
-    { label: "oversized Strike order", action: { venue: "strike", kind: "order", symbol: m.strike.markets[0], side: "buy", sizeBtc: btc(m.strike.maxPositionUsd * 4) }, state: s },
-    { label: "Strike limit far off the mark", action: { venue: "strike", kind: "order", symbol: m.strike.markets[0], side: "buy", sizeBtc: btc(m.strike.maxPositionUsd / 2), price: mark * (1 - (m.strike.priceBandPct + 3) / 100) }, state: s },
-    { label: "market not in the mandate", action: { venue: "strike", kind: "order", symbol: "DOGE-USD", side: "buy", sizeBtc: btc(10) }, state: s },
-    { label: "unhedged position past net delta", action: { venue: "strike", kind: "order", symbol: m.strike.markets[0], side: "buy", sizeBtc: btc(Math.min(m.strike.maxPositionUsd, m.risk.maxNetDeltaUsd * 1.5)) }, state: s },
-    { label: "oversized Midnight quote", action: { venue: "midnight", kind: "quote", pair: m.midnight.pairs[0], side: "ask", sizeBtc: btc(m.midnight.maxQuoteUsd * 3), price: mark * (1 + m.midnight.maxSpreadBps / 20_000), ttlSec: 60 }, state: s },
-    { label: "Midnight quote outside the spread band", action: { venue: "midnight", kind: "quote", pair: m.midnight.pairs[0], side: "ask", sizeBtc: btc(m.midnight.maxQuoteUsd / 2), price: mark * (1 + (m.midnight.maxSpreadBps * 4) / 10_000), ttlSec: 60 }, state: s },
-    { label: "Midnight bid above the mark", action: { venue: "midnight", kind: "quote", pair: m.midnight.pairs[0], side: "bid", sizeBtc: btc(m.midnight.maxQuoteUsd / 2), price: mark * 1.01, ttlSec: 60 }, state: s },
+    { label: "oversized Strike order", live: true, action: { venue: "strike", kind: "order", symbol: m.strike.markets[0], side: "buy", sizeBtc: btc(m.strike.maxPositionUsd * 4) }, state: s },
+    { label: "Strike limit far off the mark", live: true, action: { venue: "strike", kind: "order", symbol: m.strike.markets[0], side: "buy", sizeBtc: btc(m.strike.maxPositionUsd / 2), price: mark * (1 - (m.strike.priceBandPct + 3) / 100) }, state: s },
+    { label: "market not in the mandate", live: true, action: { venue: "strike", kind: "order", symbol: "DOGE-USD", side: "buy", sizeBtc: btc(10) }, state: s },
+    { label: "unhedged position past net delta", live: true, action: { venue: "strike", kind: "order", symbol: m.strike.markets[0], side: "buy", sizeBtc: btc(Math.min(m.strike.maxPositionUsd, m.risk.maxNetDeltaUsd * 1.5)) }, state: s },
+    { label: "oversized Midnight quote", live: true, action: { venue: "midnight", kind: "quote", pair: m.midnight.pairs[0], side: "ask", sizeBtc: btc(m.midnight.maxQuoteUsd * 3), price: mark * (1 + m.midnight.maxSpreadBps / 20_000), ttlSec: 60 }, state: s },
+    { label: "Midnight quote outside the spread band", live: true, action: { venue: "midnight", kind: "quote", pair: m.midnight.pairs[0], side: "ask", sizeBtc: btc(m.midnight.maxQuoteUsd / 2), price: mark * (1 + (m.midnight.maxSpreadBps * 4) / 10_000), ttlSec: 60 }, state: s },
+    { label: "Midnight bid above the mark", live: true, action: { venue: "midnight", kind: "quote", pair: m.midnight.pairs[0], side: "bid", sizeBtc: btc(m.midnight.maxQuoteUsd / 2), price: mark * 1.01, ttlSec: 60 }, state: s },
     { label: "too many open quotes", action: { venue: "midnight", kind: "quote", pair: m.midnight.pairs[0], side: "ask", sizeBtc: btc(m.midnight.maxQuoteUsd / 2), price: mark * (1 + m.midnight.maxSpreadBps / 20_000), ttlSec: 60 }, state: { ...s, openQuotes: m.midnight.maxOpenQuotes } },
-    { label: "quote living too long", action: { venue: "midnight", kind: "quote", pair: m.midnight.pairs[0], side: "ask", sizeBtc: btc(m.midnight.maxQuoteUsd / 2), price: mark * (1 + m.midnight.maxSpreadBps / 20_000), ttlSec: m.midnight.quoteTtlSec * 10 }, state: s },
+    { label: "quote living too long", live: true, action: { venue: "midnight", kind: "quote", pair: m.midnight.pairs[0], side: "ask", sizeBtc: btc(m.midnight.maxQuoteUsd / 2), price: mark * (1 + m.midnight.maxSpreadBps / 20_000), ttlSec: m.midnight.quoteTtlSec * 10 }, state: s },
     { label: "trading after the daily loss stop", action: { venue: "midnight", kind: "quote", pair: m.midnight.pairs[0], side: "ask", sizeBtc: btc(m.midnight.maxQuoteUsd / 2), price: mark * (1 + m.midnight.maxSpreadBps / 20_000), ttlSec: 60 }, state: { ...s, equityNowUsd: 1000 * (1 - (m.risk.dailyLossStopPct + 1) / 100) } },
     { label: "hammering the gateway", action: { venue: "strike", kind: "order", symbol: m.strike.markets[0], side: "buy", sizeBtc: btc(10) }, state: { ...s, actionsLastMinute: m.risk.maxActionsPerMin } },
     { label: "quoting while frozen", action: { venue: "midnight", kind: "quote", pair: m.midnight.pairs[0], side: "ask", sizeBtc: btc(m.midnight.maxQuoteUsd / 2), price: mark * (1 + m.midnight.maxSpreadBps / 20_000), ttlSec: 60 }, state: { ...s, frozen: true } },
   ];
 }
+
+/** The attempts a rogue agent in the loop cycles through: refused on the action alone. */
+export const liveAttempts = (mandate, mark) => rogueAttempts(mandate, mark).filter((t) => t.live);
 
 /** Every attempt with the checker's answer; `rules` are the distinct rules broken. */
 export function runRogue(mandate, mark) {

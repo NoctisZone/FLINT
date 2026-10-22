@@ -7,14 +7,16 @@
  *
  * An agent's Midnight wallet is trader index i in the order of agents/profiles.mjs,
  * or the index given as `name:i`; its Strike key is STRIKE_KEY_<AGENT>
- * (mm-rule → STRIKE_KEY_MM_RULE), or STRIKE_KEY.
+ * (mm-rule → STRIKE_KEY_MM_RULE), or STRIKE_KEY. The rogue (`rogue:4`) needs
+ * a wallet but no coins: every attempt is refused before anything is built.
  */
 import fs from "node:fs";
 import path from "node:path";
-import { midnightSeedOf } from "../lib/identity.mjs";
+import { midnightSeedOf, secretFor } from "../lib/identity.mjs";
+import { cardanoWallet } from "../gateway/cardano.mjs";
 import { loadFactory, settings, tokenTypes } from "../market/chain.mjs";
 import { openMcpTrader } from "../market/mcp-trader.mjs";
-import { keypair, strikeClient, TESTNET } from "../gateway/strike.mjs";
+import { strikeClient, TESTNET } from "../gateway/strike.mjs";
 const strikePositions = {};
 import { userStream } from "../gateway/strike-stream.mjs";
 import { midnightVenue } from "../gateway/midnight.mjs";
@@ -68,6 +70,9 @@ for (const m of Object.values(all)) {
 }
 const order = Object.keys(all);
 const minds = { "mm-rule": "maker", "mm-claude": "maker", "citizen-a": "citizen", "citizen-b": "citizen", rogue: "rogue" };
+// the agent's Cardano wallet, as cli/onboard.mjs derives it; its Midnight address stays hidden
+const hex = (u8) => Buffer.from(u8).toString("hex");
+const walletsOf = (agentId) => ({ cardano: cardanoWallet(hex(secretFor(cfg.master, "cardano", agentId)), { stakeSeedHex: hex(secretFor(cfg.master, "cardano-stake", agentId)) }).address, midnight: "hidden" });
 const sides = { "citizen-a": "auto", "citizen-b": "auto" };
 
 const agents = [];
@@ -85,7 +90,7 @@ for (const spec of names) {
   const own = strikeAccounts[agentId];
   const keyName = `STRIKE_KEY_${agentId.toUpperCase().replace(/-/g, "_")}`;
   const privateKeyHex = minds[agentId] === "maker" || minds[agentId] === "rogue" ? (own?.apiWalletPrivateKeyHex || process.env[keyName] || process.env.STRIKE_KEY) : null;
-  let strike = null, stream = null;
+  let strike = null, stream = null, keyUsed = privateKeyHex;
   if (privateKeyHex) {
     const builderFeeBps = own ? Math.min(own.feeShareBps ?? 0, Number(process.env.STRIKE_BUILDER_FEE_BPS || own.feeShareBps || 0)) : (process.env.STRIKE_BUILDER_FEE_BPS ? Number(process.env.STRIKE_BUILDER_FEE_BPS) : undefined);
     strike = strikeClient({ baseUrl: process.env.STRIKE_API_URL || TESTNET, privateKeyHex, builderFeeBps });
@@ -94,15 +99,14 @@ for (const spec of names) {
       await patient(`${agentId}: Strike clock`, () => strike.syncClock());
       const bal = Number((await patient(`${agentId}: Strike balance`, () => strike.balances()))[0]?.walletBalance ?? 0);
       if (bal > 0) log(`${agentId}: own Strike account ${own.accountId} with ${bal} USD, builder ${own.builderCode} at ${builderFeeBps} bps`);
-      else if (process.env.STRIKE_KEY) { log(`${agentId}: own Strike account ${own.accountId} holds 0 USD; using the shared key this run`); strike = strikeClient({ baseUrl: process.env.STRIKE_API_URL || TESTNET, privateKeyHex: process.env.STRIKE_KEY }); }
+      else if (process.env.STRIKE_KEY) { log(`${agentId}: own Strike account ${own.accountId} holds 0 USD; using the shared key this run`); keyUsed = process.env.STRIKE_KEY; strike = strikeClient({ baseUrl: process.env.STRIKE_API_URL || TESTNET, privateKeyHex: keyUsed }); }
       else log(`${agentId}: own Strike account ${own.accountId} holds 0 USD and there is no shared key: hedges will be rejected`);
     }
     await patient(`${agentId}: Strike clock`, () => strike.syncClock());
     const symbols = await patient(`${agentId}: Strike symbols`, () => strike.symbols());
     const lev = symbols.symbol_settings?.["BTC-USD"]?.leverage ?? symbols.default_leverage;
     if (lev > mandate.strike.maxLeverage) { await patient(`${agentId}: Strike leverage`, () => strike.setLeverage("BTC-USD", mandate.strike.maxLeverage)); log(`${agentId}: Strike leverage set to ${mandate.strike.maxLeverage}`); }
-    const streamKey = strike.publicKeyHex === keypair(privateKeyHex).publicKeyHex ? privateKeyHex : process.env.STRIKE_KEY;
-    stream = (onEvent) => userStream({ baseUrl: strike.baseUrl, privateKeyHex: streamKey, onEvent, onStatus: (x) => log(`${agentId}: strike stream ${x.state}${x.message ? ` ${x.message}` : ""}`) });
+    stream = (onEvent, onStatus) => userStream({ baseUrl: strike.baseUrl, privateKeyHex: keyUsed, onEvent, onStatus: (x) => { log(`${agentId}: strike stream ${x.state}${x.message ? ` ${x.message}` : ""}`); onStatus?.(x); } });
     // the books' Strike position is what Strike says it is, not what an earlier run on another account recorded
     const pos = (await patient(`${agentId}: Strike positions`, () => strike.positions())).positions?.find((p) => p.symbol === "BTC-USD");
     strikePositions[agentId] = pos ? Number(pos.size) : 0;
@@ -118,7 +122,8 @@ for (const spec of names) {
     }
   }
   // a citizen looks every round and acts on about half of them; a maker quotes 120 USD a side, above Strike's minimum and inside what a citizen's coins pay
-  agents.push({ agentId, name: agentId, mandate, mind: minds[agentId], side: sides[agentId], venue, strike, stream, trader, brain, leverage: mandate.strike.maxLeverage, options: minds[agentId] === "citizen" ? { rate: Number(process.env.CITIZEN_RATE || 0.5) } : { sizeUsd: Number(process.env.MAKER_SIZE_USD || 120) } });
+  // the shared key serves every maker without an account of its own: its fills and position are not one agent's
+  agents.push({ agentId, name: agentId, mandate, mind: minds[agentId], side: sides[agentId], venue, strike, stream, sharedStrike: Boolean(keyUsed) && keyUsed === process.env.STRIKE_KEY, wallets: walletsOf(agentId), trader, brain, leverage: mandate.strike.maxLeverage, options: minds[agentId] === "citizen" ? { rate: Number(process.env.CITIZEN_RATE || 0.5) } : { sizeUsd: Number(process.env.MAKER_SIZE_USD || 120) } });
 }
 
 const entries = decisionLog(path.join("data", "decisions.jsonl"));
@@ -127,10 +132,19 @@ const runStart = entries.append({ kind: "run.start", agents: names, books: {} })
 const BOOKS = path.join("data", "books.json");
 const books = fs.existsSync(BOOKS) ? JSON.parse(fs.readFileSync(BOOKS, "utf8")) : {};
 const saveBooks = (agentId, snap) => { books[agentId] = snap; fs.writeFileSync(BOOKS, JSON.stringify(books, null, 1)); };
-for (const [id, size] of Object.entries(strikePositions)) { if (books[id] && books[id].strikePositionBtc !== size) { log(`${id}: Strike position is ${size} BTC, the books said ${books[id].strikePositionBtc}: taking Strike's number`); books[id].strikePositionBtc = size; } }
+// Strike's position wins over the books; what inventory and position then leave open is unhedged again (another account's hedge no longer counts)
+for (const [id, size] of Object.entries(strikePositions)) {
+  const b = books[id];
+  if (!b || b.strikePositionBtc === size) continue;
+  const open = Math.round((b.midnightInventoryBtc + size) * 1e8) / 1e8;
+  log(`${id}: Strike position is ${size} BTC, the books said ${b.strikePositionBtc}: taking Strike's number, ${open} BTC unhedged`);
+  b.strikePositionBtc = size;
+  b.unhedgedBtc = Math.abs(open) >= 0.00001 ? open : 0;
+}
 runStart.books = structuredClone(books);
 for (const [id, b] of Object.entries(books)) if (names.some((n) => n.split(":")[0] === id)) log(`${id}: books from the last run: inventory ${b.midnightInventoryBtc} BTC, Strike ${b.strikePositionBtc} BTC, unhedged ${b.unhedgedBtc} BTC${b.frozen ? `, frozen (${b.frozenReason})` : ""}`);
 const feed = feedState();
+feed.setLiquidity(process.env.STRIKE_LIQUIDITY_NOTE || null);
 const server = await feedServer(feed, { port, host: "0.0.0.0" });
 log(`feed on http://localhost:${server.address().port}/feed/meta`);
 const pub = strikeClient({ baseUrl: process.env.STRIKE_API_URL || TESTNET });
@@ -145,6 +159,7 @@ async function shutdown() {
   log("stopping: retiring quotes, closing wallets");
   await g.stop();
   await refreshReconcile().catch((err) => log(`reconcile: ${err.message}`));
+  await attestBadges().catch((err) => log(`badges: ${err.message}`));
   for (const a of agents) await a.trader.close().catch(() => {});
   server.close();
   process.exit(0);
@@ -206,6 +221,8 @@ async function attestWindow() {
       refusals: mine.filter((e) => e.kind === "refusal").map(({ hash, prev, ...e }) => e),
       capitalTrailHash: feed.get("capital")?.trailHash ?? null,
     });
+    // an empty window has nothing to attest, and the sponsor's hour has only 60 transactions
+    if (w.envelope.outputs.decisions + w.envelope.outputs.fills + w.envelope.outputs.refusals === 0) continue;
     try {
       const r = await at.attest({ payloadHash: w.payloadHash, metadataHash: w.metadataHash, label: "window" });
       fs.writeFileSync(path.join(attestDir, `${agentId}-${to.replace(/[:.]/g, "-")}.json`), JSON.stringify({ ...w, ...r }, null, 1));
@@ -215,6 +232,30 @@ async function attestWindow() {
     } catch (err) { log(`${agentId}: window attestation failed: ${err.message.slice(0, 160)}`); }
   }
   windowFrom = to;
+}
+
+// the badges: the latest reconciler report of each maker proven on the vault, at shutdown and every BADGES_EVERY_ROUNDS rounds
+const badgesEvery = Number(process.env.BADGES_EVERY_ROUNDS || 30);
+const lastReconcile = new Map();
+let badgesBusy = false;
+async function attestBadges() {
+  if (!VAULT || badgesBusy) return;
+  badgesBusy = true;
+  try {
+    for (const [agentId, at] of attesters) {
+      const a = agents.find((x) => x.agentId === agentId);
+      const r = lastReconcile.get(agentId);
+      // the sponsor allows 60 transactions an hour: badges only for a maker that has fills to prove
+      if (!a || !r || minds[agentId] !== "maker" || !(r.counts?.midnightFills > 0)) continue;
+      try {
+        const b = await at.badges({ agentId, mandate: a.mandate, mandateHash: mandateHash(a.mandate), runStart: runStart.ts, asOf: r.asOf, claims: r.claims, counts: r.counts });
+        fs.writeFileSync(path.join(attestDir, `${agentId}-badges-${b.at.replace(/[:.]/g, "-")}.json`), JSON.stringify(b, null, 1));
+        const { witness, document, ...pub } = b;
+        feed.proof(agentId, { badges: pub });
+        log(`${agentId}: badges on chain: ${b.earned.length ? b.earned.join(", ") : "none earned"}; ${b.claims.map((c) => `${c.badge} ${c.status}${c.verified ? " verified" : ""}`).join(", ")}`);
+      } catch (err) { log(`${agentId}: badges failed: ${err.message.slice(0, 160)}`); }
+    }
+  } finally { badgesBusy = false; }
 }
 
 // the reconciler: this run's decision log against Strike's own fill history, per maker; the four badge claims go to the feed
@@ -235,6 +276,7 @@ async function refreshReconcile() {
       const carried = runStart.books[a.agentId] ?? {};
       const r = reconcile({ entries, strikeFills: fills, mandate: a.mandate, startDeltaBtc: (carried.midnightInventoryBtc ?? 0) + (carried.strikePositionBtc ?? 0) });
       report.agents[a.agentId] = { ok: r.ok, counts: r.counts, claims: r.claims, violations: r.violations, maxLatencyMs: r.maxLatencyMs };
+      lastReconcile.set(a.agentId, { asOf: report.asOf, claims: r.claims, counts: r.counts });
       feed.proof(a.agentId, { reconciled: report.asOf, claims: r.claims, violations: r.violations.length, counts: r.counts, logChain: chain.ok ? `${chain.entries} entries, chain intact` : `broken at ${chain.brokenAt}` });
       log(`${a.agentId}: reconcile — ${r.ok ? "0 violations" : `${r.violations.length} violation(s): ${[...new Set(r.violations.map((v) => v.rule))].join(", ")}`}; ${r.counts.midnightFills} Midnight fills, ${r.counts.strikeFills} Strike fills, max fill-to-hedge ${Math.round(r.maxLatencyMs / 100) / 10}s; log ${chain.ok ? "intact" : "BROKEN"}`);
     } catch (err) { log(`${a.agentId}: reconcile: ${err.message}`); }
@@ -286,11 +328,20 @@ if (toolsPort) {
 }
 
 if (rounds > 0) {
-  for (let i = 1; i <= rounds; i++) { log(`round ${i} of ${rounds}`); await g.round(); if (i % 5 === 0) await refreshReconcile().catch((err) => log(`reconcile: ${err.message}`)); if (i % attestEvery === 0) await attestWindow().catch((err) => log(`attest: ${err.message}`)); if (i < rounds) await new Promise((r) => setTimeout(r, roundMs)); }
+  for (let i = 1; i <= rounds; i++) {
+    log(`round ${i} of ${rounds}`);
+    await g.round();
+    if (i % 5 === 0) await refreshReconcile().catch((err) => log(`reconcile: ${err.message}`));
+    if (i % attestEvery === 0) await attestWindow().catch((err) => log(`attest: ${err.message}`));
+    // several sponsored calls in a row: in the background, so the rounds and the quotes go on
+    if (badgesEvery && i % badgesEvery === 0 && i < rounds) attestBadges().catch((err) => log(`badges: ${err.message}`));
+    if (i < rounds) await new Promise((r) => setTimeout(r, roundMs));
+  }
   await attestWindow().catch((err) => log(`attest: ${err.message}`));
   await shutdown();
 } else {
   g.start(roundMs);
   setInterval(() => refreshReconcile().catch((err) => log(`reconcile: ${err.message}`)), 5 * roundMs).unref();
   setInterval(() => attestWindow().catch((err) => log(`attest: ${err.message}`)), attestEvery * roundMs).unref();
+  if (badgesEvery) setInterval(() => attestBadges().catch((err) => log(`badges: ${err.message}`)), badgesEvery * roundMs).unref();
 }

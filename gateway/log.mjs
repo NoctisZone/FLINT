@@ -26,7 +26,7 @@ export function decisionLog(file, { now = () => new Date().toISOString() } = {})
   return {
     /** Writes the entry and returns it with seq, ts, prev and hash. */
     append(entry) {
-      const body = { seq: seq + 1, ts: now(), prev, ...entry };
+      const body = { ...entry, seq: seq + 1, ts: now(), prev };
       const full = { ...body, hash: hashOf(body) };
       fs.appendFileSync(file, JSON.stringify(full) + "\n");
       prev = full.hash;

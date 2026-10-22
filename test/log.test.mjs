@@ -30,3 +30,12 @@ test("entries chain by hash; a changed line breaks the chain at that line; a reo
   fs.writeFileSync(file, lines.join("\n"));
   assert.deepEqual(verifyLog(file), { ok: false, entries: 2, brokenAt: 2 });
 });
+
+test("an entry cannot bring its own seq, ts or prev: the log's own values win", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "flint-log-"));
+  const file = path.join(dir, "decisions.jsonl");
+  const log = decisionLog(file, { now: () => "t1" });
+  const e = log.append({ kind: "fill", seq: 99, ts: "yesterday", prev: "ff".repeat(32) });
+  assert.deepEqual([e.seq, e.ts, e.prev], [1, "t1", "0".repeat(64)]);
+  assert.deepEqual(verifyLog(file), { ok: true, entries: 1, brokenAt: null });
+});

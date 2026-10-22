@@ -1,8 +1,8 @@
 /**
  * The rule-based market maker's mind: a bid and an ask around the Strike
- * mark at a fixed spread, sized inside the mandate and the wallet, requoted
- * when the mark has moved more than half the spread. Pure: it looks at a
- * view and returns the actions the gateway should take.
+ * mark, each `spreadBps` away from it, sized inside the mandate and the
+ * wallet, requoted when the mark has moved more than that. Pure: it looks
+ * at a view and returns the actions the gateway should take.
  */
 
 /**
@@ -16,19 +16,19 @@
  * @param {number} [v.strikePositionBtc]  signed; a fill's hedge must keep the Strike position under its cap
  * @param {number} v.now   ms
  * @param {object} [o]
- * @param {number} [o.spreadBps]       quoted spread, clamped into the mandate's band
- * @param {number} [o.requoteBps]      requote when the mark moved this far from a quote's mid; default half the spread
+ * @param {number} [o.spreadBps]       each side's distance from the mark, clamped into the mandate's band
+ * @param {number} [o.requoteBps]      requote when the mark moved this far from a quote's mid; default the spread
  * @param {number} [o.ttlSec]
  * @param {number} [o.sizeUsd]         each quote's size in USD, capped by the mandate
  * @param {boolean} [o.pause]          pull every quote, post none
  * @param {number} [o.minQuoteUsd]      no quote smaller than this: Strike's minimum hedge notional
  * @returns {{ retire: string[], quotes: Array<{side, sizeBtc, price, ttlSec}>, reason: string }}
  */
-export function makerDecision(v, { spreadBps = 50, requoteBps, ttlSec, sizeUsd, pause = false, minQuoteUsd = 5 } = {}) {
+export function makerDecision(v, { spreadBps = 25, requoteBps, ttlSec, sizeUsd, pause = false, minQuoteUsd = 5 } = {}) {
   const m = v.mandate.midnight;
-  const spread = Math.min(Math.max(spreadBps, m.minSpreadBps + 2), m.maxSpreadBps);
-  const half = spread / 2 / 10_000;
-  const requote = (requoteBps ?? spread / 2) / 10_000;
+  const spread = Math.min(Math.max(spreadBps, m.minSpreadBps), m.maxSpreadBps);
+  const half = spread / 10_000;
+  const requote = (requoteBps ?? spread) / 10_000;
   const ttl = Math.min(ttlSec ?? m.quoteTtlSec, m.quoteTtlSec);
   if (pause) return { retire: v.openQuotes.map((q) => q.quoteId), quotes: [], reason: "paused: pulling every quote" };
   // frozen: only the side that brings net delta back toward zero may stand
@@ -63,18 +63,18 @@ export function makerDecision(v, { spreadBps = 50, requoteBps, ttlSec, sizeUsd, 
   const reasons = [];
   if (!keep.ask && (!onlySide || onlySide === "ask")) {
     const sizeBtc = Math.min(size / v.mark, v.holdings.spendable.btc, roomAsk, hedgeRoomAsk);
-    if (fits(floor8(sizeBtc))) quotes.push({ side: "ask", sizeBtc: round8(floor8(sizeBtc)), price: round1(v.mark * (1 + half)), ttlSec: ttl });
-    else reasons.push(roomAsk * v.mark < minQuoteUsd ? "net delta leaves no room for an ask" : hedgeRoomAsk * v.mark < minQuoteUsd ? "the Strike position cap leaves no room to hedge an ask" : `not enough tBTC for an ask of at least ${minQuoteUsd} USD`);
+    if (fits(floor8(sizeBtc))) quotes.push({ side: "ask", sizeBtc: round8(floor8(sizeBtc)), price: ceil1(v.mark * (1 + half)), ttlSec: ttl });
+    else reasons.push(size < minQuoteUsd ? `quote size ${size} USD is under the hedge minimum of ${minQuoteUsd} USD` : roomAsk * v.mark < minQuoteUsd ? "net delta leaves no room for an ask" : hedgeRoomAsk * v.mark < minQuoteUsd ? "the Strike position cap leaves no room to hedge an ask" : `not enough tBTC for an ask of at least ${minQuoteUsd} USD`);
   }
   if (!keep.bid && (!onlySide || onlySide === "bid")) {
     const sizeBtc = Math.min(size / v.mark, v.holdings.spendable.usd / (v.mark * (1 - half)), roomBid, hedgeRoomBid);
-    if (fits(floor8(sizeBtc))) quotes.push({ side: "bid", sizeBtc: round8(floor8(sizeBtc)), price: round1(v.mark * (1 - half)), ttlSec: ttl });
-    else reasons.push(roomBid * v.mark < minQuoteUsd ? "net delta leaves no room for a bid" : hedgeRoomBid * v.mark < minQuoteUsd ? "the Strike position cap leaves no room to hedge a bid" : `not enough tUSD for a bid of at least ${minQuoteUsd} USD`);
+    if (fits(floor8(sizeBtc))) quotes.push({ side: "bid", sizeBtc: round8(floor8(sizeBtc)), price: floor1(v.mark * (1 - half)), ttlSec: ttl });
+    else reasons.push(size < minQuoteUsd ? `quote size ${size} USD is under the hedge minimum of ${minQuoteUsd} USD` : roomBid * v.mark < minQuoteUsd ? "net delta leaves no room for a bid" : hedgeRoomBid * v.mark < minQuoteUsd ? "the Strike position cap leaves no room to hedge a bid" : `not enough tUSD for a bid of at least ${minQuoteUsd} USD`);
   }
   const reason = [
     onlySide ? `frozen: only the ${onlySide} that reduces net delta` : null,
-    retire.length ? `${retire.length} quote(s) off: mark moved past ${spread / 2} bps or expiry near` : null,
-    quotes.length ? `quoting ${quotes.map((q) => q.side).join(" and ")} at ${spread} bps around ${v.mark}` : null,
+    retire.length ? `${retire.length} quote(s) off: mark moved past ${requote * 10_000} bps or expiry near` : null,
+    quotes.length ? `quoting ${quotes.map((q) => q.side).join(" and ")} ${spread} bps off ${v.mark}` : null,
     ...reasons,
   ].filter(Boolean).join("; ") || "both sides standing, nothing to do";
   return { retire, quotes, reason };
@@ -114,5 +114,7 @@ const closingSoon = (q, now) => q.expiresAt && Date.parse(q.expiresAt) - now < 6
 /** Strike's BTC-USD step: quote sizes are multiples of it, so a hedge is the same size. */
 export const STEP_BTC = 0.00001;
 const floor8 = (x) => Math.floor(x / STEP_BTC + 1e-9) * STEP_BTC;
-const round1 = (x) => Math.round(x * 10) / 10;
+// prices round away from the mark, so a quote never lands inside the spread it was meant to keep
+const ceil1 = (x) => Math.ceil(x * 10 - 1e-6) / 10;
+const floor1 = (x) => Math.floor(x * 10 + 1e-6) / 10;
 const round8 = (x) => Math.round(x * 1e8) / 1e8;

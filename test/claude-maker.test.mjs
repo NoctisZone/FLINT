@@ -5,7 +5,7 @@ import { MAKER_PROMPT, claudeMaker } from "../agents/claude-maker.mjs";
 import { makerDecision } from "../agents/rule-maker.mjs";
 import { profiles } from "../agents/profiles.mjs";
 
-const view = { agentId: "mm-claude", mark: 84_000, funding: 0.0000125, books: {}, openQuotes: [], mandate: { minSpreadBps: 10, maxSpreadBps: 150, maxQuoteUsd: 150 } };
+const view = { agentId: "mm-claude", mark: 84_000, funding: 0.0000125, books: {}, openQuotes: [], mandate: { minSpreadBps: 25, maxSpreadBps: 150, maxQuoteUsd: 150 } };
 const client = (answer) => { const requests = []; return { requests, beta: { messages: { parse: async (p) => { requests.push(p); return typeof answer === "function" ? answer(p) : answer; } } } }; };
 const budget = (limit, used = 0) => { let n = used; return { limit, left: () => limit - n, spend: () => { n += 1; } }; };
 const ok = (d) => ({ model: "claude-haiku-5-5", stop_reason: "end_turn", parsed_output: d, usage: { input_tokens: 700, output_tokens: 60 } });
@@ -37,7 +37,7 @@ test("the rule maker takes Claude's spread, size and pause as options, still ins
   const P = profiles({ owner: "o", expiry: "2026-10-23T15:00:00Z" });
   const v = { mandate: P["mm-claude"], mark: 80_000, holdings: { btc: 0.01, usd: 800, spendable: { btc: 0.004, usd: 320 } }, openQuotes: [], frozen: false, now: 0 };
   const d = makerDecision(v, { spreadBps: 40, sizeUsd: 120 });
-  assert.deepEqual(d.quotes.map((q) => [q.side, q.price, q.sizeBtc]), [["ask", 80_160, 0.0015], ["bid", 79_840, 0.0015]]);
+  assert.deepEqual(d.quotes.map((q) => [q.side, q.price, q.sizeBtc]), [["ask", 80_320, 0.0015], ["bid", 79_680, 0.0015]], "40 bps a side");
   assert.equal(makerDecision(v, { spreadBps: 40, sizeUsd: 999 }).quotes[0].sizeBtc, 0.00187, "size capped by the mandate");
   const p = makerDecision({ ...v, openQuotes: [{ quoteId: "a", side: "ask", price: 80_160, sizeBtc: 0.001 }] }, { pause: true });
   assert.deepEqual([p.retire, p.quotes], [["a"], []]);

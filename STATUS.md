@@ -1,6 +1,6 @@
 # Flint: status for the arena work
 
-*As of 2026-10-21, 20:00 UTC. The gateway runs on the preprod box; Max restarts it when the code changes.*
+*As of 2026-10-22, 07:00 UTC. The gateway runs on the preprod box; Max restarts it when the code changes.*
 
 Flint is a mandate gateway: agents quote tBTC/tUSD on Midnight's offer board (preprod), every fill is hedged on Strike BTC-USD (testnet), and nothing reaches a venue without passing the owner's mandate. The arena page reads one JSON feed. Everything below is built and has run live.
 
@@ -13,13 +13,13 @@ npm install
 npm run mock-feed        # http://localhost:4481/feed/<route>
 ```
 
-The mock has made-up numbers in the real shape: a new quote and fill every few seconds, a refusal every 20 s. The live gateway serves the same routes on its own port when it runs; the page should handle a failed poll quietly, since the gateway restarts when the code changes.
+The mock has made-up numbers and goes through the same feed state as the gateway, so every route has the live shape: a new quote every 5 s, a fill and its hedge every 10 s, a refusal every 20 s, a paid call every 50 s. The live gateway serves the same routes on its own port when it runs; the page should handle a failed poll quietly, since the gateway restarts when the code changes. Both are public over https on the demo host: the mock under `/flint/`, the running gateway under `/flint-live/` (full URLs in `local_docs/`).
 
 Routes: `meta`, `agents`, `quotes`, `fills`, `decisions`, `refusals`, `proofs`, `capital`, `revenue`. Poll every 5 s. `fills`, `decisions`, `refusals` take `?since=<ISO timestamp>` and come newest first. CORS is open.
 
 ## What works, seen live today
 
-- **Quotes on Midnight**: a maker posts a bid and an ask around Strike's mark (spread 50 bps, size 120 USD), as proven swap halves on the board; a half proves in about 5 s. Quotes expire after 5 minutes or are pulled when the mark moves.
+- **Quotes on Midnight**: a maker posts a bid and an ask around Strike's mark (each 25 bps off it, size 120 USD), as proven swap halves on the board; a half proves in about 5 s. Quotes expire after 5 minutes or are pulled when the mark moves. Spreads are per side everywhere: the mandate's band, the checks, the makers' decisions.
 - **Fills**: a citizen takes a quote, the sponsor pays, the swap lands in 25 to 55 s. The gateway sees the fill on the board row (with the Midnight txHash).
 - **Hedge on fill**: the maker's Strike order follows within a second of the fill being seen. The testnet book is thin, so a market hedge often cancels and rests as a limit; a fill of the other side nets it instead ("netted"). Everything is in the decision log.
 - **Mandate checks and refusals**: nine checks, first failure wins, with rule, limit and attempted value. The rogue agent is refused on 12 attempts for 12 distinct rules (`npm run rogue`).
@@ -32,33 +32,36 @@ Routes: `meta`, `agents`, `quotes`, `fills`, `decisions`, `refusals`, `proofs`, 
 
 ## The feed, with real samples
 
-`meta`
+`meta` — `strikeLiquidity` names who stands on the other side of the hedges when the venue has no market maker (our own testnet liquidity account), null when it is the real book.
 ```json
-{ "runStart": "2026-10-21T19:49:35.478Z", "networks": { "midnight": "preprod", "strike": "testnet" }, "strikeMark": 84466.93, "sponsorReady": null, "serverTime": "2026-10-21T19:51:04.095Z" }
+{ "runStart": "2026-10-21T19:49:35.478Z", "networks": { "midnight": "preprod", "strike": "testnet" }, "strikeMark": 84466.93, "sponsorReady": null, "strikeLiquidity": "flint testnet liquidity account: stands in for the empty testnet book", "serverTime": "2026-10-21T19:51:04.095Z" }
 ```
 
-`agents` — one card per agent. `type` is `mm`, `citizen` or `rogue`; `status` is `quoting`, `hedging` (a hedge is pending), `watching` (citizen), `frozen`, `paused`, `starting`.
+`agents` — one card per agent. `type` is `mm`, `citizen` or `rogue`; `status` is `quoting`, `hedging` (a hedge is pending), `watching` (citizen), `probing` (the rogue, one refused attempt a round), `frozen`, `paused`, `starting`. The day's figures (`day` is the UTC date): `equityUsd` (Midnight holdings at the mark plus Strike margin balance), `equityStartUsd` and `pnlPct` since the day's first round, `spreadCapturedUsd` (what fills earned against the mark), `hedgeCostUsd` (Strike fees, builder fees and slippage against the mark), `strikeVolumeUsd`, `builderFeesUsd`; `wallets` (Cardano address, Midnight "hidden").
 ```json
 { "agents": [ {
   "agentId": "mm-rule", "name": "mm-rule", "type": "mm", "status": "hedging",
   "mandate": { "hash": "27b5b1c5…", "maxNetDeltaUsd": 150, "hedgeWithinSec": 120, "maxQuoteUsd": 150, "maxPositionUsd": 500 },
   "midnight": { "btc": 0.00350749, "usd": 390.45, "openQuotes": 2 },
   "strikePositionBtc": -0.00319, "netDeltaUsd": -120.16, "unhedgedUsd": -119.94,
-  "hedges": 0, "maxHedgeLatencySec": 0, "pending": 1
+  "hedges": 0, "maxHedgeLatencySec": 0, "pending": 1,
+  "equityUsd": 1016.84, "equityStartUsd": 1016.84, "pnlPct": 0, "spreadCapturedUsd": 0.37, "hedgeCostUsd": 0.23, "strikeVolumeUsd": 149.61, "builderFeesUsd": 0.15, "day": "2026-10-22",
+  "wallets": { "cardano": "addr_test1qprc…v55", "midnight": "hidden" }
 } ] }
 ```
-Not in the live card yet, but in the mock and coming: `wallets` (cardano address, midnight "hidden"), `equityUsd`, `pnlPct`, `spreadCapturedUsd`, `hedgeCostUsd`, `strikeVolumeUsd`, `builderFeesUsd`, `proof` (last attestation, badges).
+Attestations and badge claims are on `proofs`, in the mock as live.
 
 `quotes` — open quotes on the board, the maker hidden on chain but named here because they are ours.
 ```json
 { "quotes": [ { "quoteId": "be6e9236-…", "side": "ask", "sizeBtc": 0.0012, "price": 84725.7, "expiresAt": "2026-10-21T19:53:36.633Z", "agentId": "mm-rule", "pair": "tBTC/tUSD" } ] }
 ```
 
-`fills` — a Midnight fill (with the swap's txHash) and, as separate entries, the Strike fills of hedges. Pair them by `agentId` and time for the fill-to-hedge timeline.
+`fills` — a Midnight fill (with the swap's txHash) and, as separate entries, the Strike fills of hedges. Once the hedger has closed a Midnight fill, the fill's entry carries `hedge`: `how` is `market` (a Strike market order), `limit` (a resting limit that filled), `netted` (a fill of the other side closed it, no Strike order) or `dust` (a few dollars left, not worth an order); `clientOrderIds` are the Strike orders involved (several when one order covered part and another the rest), `price` their size-weighted fill price, `latencySec` fill to hedge. Until then the entry has no `hedge`. The `strikeFill` entries are the raw Strike side; match them to a fill by `clientOrderIds`.
 ```json
 { "fills": [
-  { "ts": "2026-10-21T19:50:55.456Z", "agentId": "mm-rule", "quoteId": "46b48280-…", "txHash": "00c34943…", "midnight": { "side": "sell", "sizeBtc": 0.00142, "price": 84683.5 } },
-  { "ts": "2026-10-21T16:00:13.231Z", "agentId": "mm-rule", "strikeFill": { "side": "SELL", "size": "0.00142", "price": "84564.9", "clientOrderId": "mm-rule-hedge-1-…" } }
+  { "ts": "2026-10-21T19:50:55.456Z", "agentId": "mm-rule", "quoteId": "46b48280-…", "txHash": "00c34943…", "midnight": { "side": "sell", "sizeBtc": 0.00142, "price": 84683.5 },
+    "hedge": { "how": "market", "clientOrderIds": ["mm-rule-hedge-1-…"], "price": 84564.9, "latencySec": 6.2, "at": "2026-10-21T19:51:01.656Z" } },
+  { "ts": "2026-10-21T19:51:01.656Z", "agentId": "mm-rule", "strikeFill": { "side": "BUY", "size": "0.00142", "price": "84564.9", "clientOrderId": "mm-rule-hedge-1-…" } }
 ] }
 ```
 
@@ -88,7 +91,15 @@ The same card carries the on-chain attestations (live since tonight): the agent'
   "mandate": { "payloadHash": "8b0f8ce6…", "txHash": "009e42cc…", "status": "succeeded", "verified": true, "at": "2026-10-21T19:58:53.657Z" },
   "lastAttestation": { "at": "…", "window": { "from": "…", "to": "…" }, "payloadHash": "…", "txHash": "…", "status": "succeeded", "verified": true, "decisions": 12, "fills": 2 } }
 ```
-`verified` is the answer of a live check against the contract; anyone with a NIGHTGATE MCP server can repeat it with the attester id and payload hash. The on-chain badge batch (the four claims as zero-knowledge predicates) is tomorrow's work.
+`verified` is the answer of a live check against the contract; anyone with a NIGHTGATE MCP server can repeat it with the attester id and payload hash.
+
+The badges on chain, under `badges` on the same card: the reconciler's four claims go into one document (its hash attested, its Merkle root anchored), and each badge is a zero-knowledge proof that one field is at most the mandate's limit. A false claim earns nothing and costs no transaction (`status: "false"`); the others are proven and verified against live state. Verifiers need the attester id, the payload hash, the field key and the threshold, nothing else; the numbers stay hidden. Written every 30 rounds and at shutdown.
+```json
+{ "badges": { "at": "…", "payloadHash": "…", "contentRoot": "…", "anchor": { "txHash": "…", "status": "succeeded" }, "root": { "txHash": "…", "status": "succeeded" },
+  "earned": ["delta-held", "hedged-in-time", "allowed-venues"],
+  "claims": [ { "badge": "no-violations", "field": "claims.violations", "predicate": "lessOrEqual", "threshold": 0, "value": 1, "status": "false", "txHash": null, "verified": false, "earned": false },
+              { "badge": "delta-held", "field": "claims.maxNetDeltaUsd", "predicate": "lessOrEqual", "threshold": 150, "value": 118.25, "fieldKey": "…", "status": "succeeded", "txHash": "…", "verified": true, "earned": true } ] } }
+```
 
 `capital` — where the hedging money comes from, traceable on Cardano preprod.
 ```json
@@ -111,19 +122,16 @@ A tx hash links to `https://preprod.cexplorer.io/tx/<txHash>`.
 
 1. **Leaderboard** from `agents`: equity, PnL, spread captured, hedge cost, net delta, Strike volume, builder fees, status.
 2. **Midnight book** from `quotes`: price, size, expiry countdown, side, maker (ours by name, outside ones as "hidden").
-3. **Fill-to-hedge timeline** from `fills`: each Midnight fill next to the Strike fill that hedged it, with the seconds between.
+3. **Fill-to-hedge timeline** from `fills`: each Midnight fill with its `hedge` (how, Strike orders, price, seconds between); a fill without `hedge` yet is pending.
 4. **Decision feed and refusal feed** from `decisions` and `refusals`: the sentence, the rule.
-5. **Agent cards**: Cardano address, Midnight "hidden", mandate hash, the four badges, attestation link.
+5. **Agent cards**: Cardano address, Midnight "hidden", mandate hash, the four badges (`proofs[].badges.earned`), attestation link.
 6. **Capital** from `capital`: the deposit and its three hops, balance, fees, funding.
 7. **Revenue** from `revenue`: paid calls, the last payer, the pay-to address.
 
 ## Open for tomorrow (gateway side)
 
-- The badge batch on Midnight (the four claims as zero-knowledge predicates at the end of a run).
-- Per-agent Strike accounts live, once Strike credits the testnet deposits (their known issue).
-- Agent cards: equity, PnL, spread captured, hedge cost, volume, builder fees, wallets.
-- A long unattended run with the three agents and the Claude maker, reconciler at 0 violations.
-- Discord: testnet BTC-USD liquidity, so hedges fill instead of resting.
+- A long unattended run with the three agents, the Claude maker and the rogue, reconciler at 0 violations.
+- Discord: testnet BTC-USD liquidity from Strike; until then our own liquidity account (`npm run liquidity`) stands in, named on `meta.strikeLiquidity`.
 
 ## Names
 

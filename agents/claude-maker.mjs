@@ -13,8 +13,8 @@ export const MAKER_SCHEMA = {
   properties: {
     reason: { type: "string", description: "one short sentence, at most 25 words, naming the spread you chose" },
     pause: { type: "boolean", description: "true pulls every quote this round and posts none" },
-    spreadBps: { type: "integer", description: "the full spread around the mark in basis points, inside the mandate's band" },
-    sizeUsd: { type: "integer", description: "the size of each quote in USD, at most the mandate's maxQuoteUsd" },
+    spreadBps: { type: "integer", description: "each side's distance from the mark in basis points, inside the mandate's band" },
+    sizeUsd: { type: "integer", description: "each quote's size in USD, from minQuoteUsd (the smallest hedge Strike accepts) to maxQuoteUsd" },
   },
   required: ["reason", "pause", "spreadBps", "sizeUsd"],
   additionalProperties: false,
@@ -24,7 +24,7 @@ export const MAKER_PROMPT = `You are a market maker on a private venue. You quot
 
 You see: the mark and the funding rate, your books (inventory, Strike position, net delta), your open quotes, recent fills with their hedge latency, the mandate (spread band, size cap, open quote cap, net delta limit), and what the wallet can still quote.
 
-Choose the full spread in basis points and the size in USD. Quote tighter when fills are landing and hedges are fast, wider when the mark moves a lot or the hedge was slow. Pause only when something is wrong: a hedge is late, net delta is near its limit, or the sponsor is down. Stay inside the mandate; anything outside is refused by the gateway, not by you.
+Choose the spread per side in basis points (how far your bid and your ask each sit from the mark) and the size in USD, at least minQuoteUsd (the smallest hedge Strike accepts) and at most maxQuoteUsd. Quote tighter when fills are landing and hedges are fast, wider when the mark moves a lot or the hedge was slow. Pause only when something is wrong: a hedge is late, net delta is near its limit, or the sponsor is down. Stay inside the mandate; anything outside is refused by the gateway, not by you.
 
 Decide first, then write the reason: one plain sentence in English, at most 25 words, naming the spread.`;
 

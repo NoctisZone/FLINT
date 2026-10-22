@@ -66,7 +66,7 @@ test("a fill on the other side nets the older exposure first; the resting limit 
   assert.equal(h.pending[0].resting, true);
   clock(T0 + 4_000);
   await h.onFill(fill({ id: "b", side: "sell", sizeBtc: 0.0015, at: T0 + 4_000 }));
-  assert.equal(h.hedges.length, 0, "a is only partly netted");
+  assert.deepEqual(h.hedges.map((x) => [x.fill.id, x.hedge.how, x.latencyMs]), [["b", "netted", 0]], "b is hedged on arrival; a is only partly netted");
   assert.equal(h.state.unhedgedBtc, 0.0005);
   assert.deepEqual(h.exposures.map((e) => [e.fillId, e.remaining]), [["a", 0.0005]]);
   assert.equal(cancels.length, 1, "the resting limit was pulled");
@@ -74,9 +74,11 @@ test("a fill on the other side nets the older exposure first; the resting limit 
   const placed = log.filter((e) => e.kind === "hedge.placed");
   assert.equal(placed.at(-1).sizeBtc, 0.0005, "the net 0.0005 is hedged");
   await h.onStrikeEvent({ kind: "fill", clientOrderId: placed.at(-1).clientOrderId, side: "SELL", size: "0.0005", price: "80000", at: T0 + 5_000 });
-  assert.equal(h.hedges.length, 1);
-  assert.equal(h.hedges[0].fill.id, "a");
-  assert.equal(h.hedges[0].latencyMs, 5_000);
+  assert.equal(h.hedges.length, 2);
+  const a = h.hedges.find((x) => x.fill.id === "a");
+  assert.equal(a.latencyMs, 5_000);
+  assert.deepEqual([a.hedge.how, a.hedge.clientOrderIds, a.hedge.price], ["netted", [placed.at(-1).clientOrderId], 80_000], "mostly netted, the rest by one Strike fill");
+  assert.deepEqual(a.hedge.parts.map((x) => [x.how, x.sizeBtc]), [["netted", 0.0015], ["market", 0.0005]]);
   assert.equal(h.state.unhedgedBtc, 0);
 });
 
@@ -85,8 +87,7 @@ test("a fill that fully nets an older one is a hedge by netting, with the nettin
   await h.onFill(fill({ id: "a", side: "buy", sizeBtc: 0.001, at: T0 }));
   await h.onStrikeEvent({ kind: "order", clientOrderId: orders[0].clientOrderId, status: "CANCELED", terminal: true, closeReason: "market_order_exceeded_slippage", at: T0 + 100 });
   await h.onFill(fill({ id: "b", side: "sell", sizeBtc: 0.001, at: T0 + 3_000 }));
-  assert.equal(h.hedges.length, 1);
-  assert.deepEqual([h.hedges[0].fill.id, h.hedges[0].hedge.how, h.hedges[0].latencyMs], ["a", "netted", 3_000]);
+  assert.deepEqual(h.hedges.map((x) => [x.fill.id, x.hedge.how, x.latencyMs]), [["a", "netted", 3_000], ["b", "netted", 0]], "both fills are hedged, neither by Strike");
   assert.equal(h.state.unhedgedBtc, 0);
   assert.equal(h.pending.length, 0);
   assert.equal(orders.length, 2, "no third order: nothing left to hedge");
@@ -150,16 +151,6 @@ test("the books come back from a snapshot as one carried exposure; rehedge place
   assert.deepEqual(await setup().h.rehedge(), { placed: false });
 });
 
-test("carried exposure below Strike's minimum order stays on the books: no order, still frozen, only the reducing side quotes", async () => {
-  const { h, orders, log } = setup({ minNotionalUsd: 100, state: { midnightInventoryBtc: 0.0003, unhedgedBtc: 0.0003, frozen: true, frozenReason: "min notional" } });
-  assert.deepEqual(await h.rehedge(), { placed: false, small: true });
-  assert.equal(orders.length, 0);
-  assert.equal(h.state.frozen, true);
-  assert.equal(h.state.unhedgedBtc, 0.0003);
-  assert.ok(kinds(log).includes("carry.small"));
-  assert.equal(check({ venue: "midnight", kind: "quote", pair: "tBTC/tUSD", side: "ask", sizeBtc: 0.0002, price: MARK * 1.005, ttlSec: 60 }, h.state), null);
-});
-
 test("a market hedge canceled for slippage becomes a resting limit at the edge of the band; its fill closes the loop", async () => {
   const { h, orders, log } = setup();
   const r = await h.onFill(fill({ side: "buy", sizeBtc: 0.002 }));
@@ -211,3 +202,98 @@ test("a carried hedge never crosses zero when the inventory holds dust; a few do
   assert.equal(h.state.frozen, false);
   assert.ok(log.some((e) => e.kind === "dust"));
 });
+
+test("another agent's fill on a shared account is ignored, and so is the account's position; an own fill without a pending order still moves the position", async () => {
+  const { h } = setup();
+  await h.onStrikeEvent({ kind: "fill", clientOrderId: "mm-claude-hedge-1-5", side: "BUY", size: "0.005", price: "80000", at: T0 });
+  assert.equal(h.state.strikePositionBtc, 0);
+  await h.onStrikeEvent({ kind: "fill", clientOrderId: "mm-rule-tool-7", side: "SELL", size: "0.002", price: "80000", at: T0 });
+  assert.equal(h.state.strikePositionBtc, -0.002, "a tool order of this agent counts");
+  await h.onStrikeEvent({ kind: "position", symbol: "BTC-USD", size: "0.5", at: T0 });
+  assert.equal(h.state.strikePositionBtc, 0.5, "an own account's position is the truth");
+  const shared = hedger({ mandate: M, symbol: "BTC-USD", strike: { mark: () => MARK, placeOrder: async () => ({}) }, ownAccount: false });
+  await shared.onStrikeEvent({ kind: "position", symbol: "BTC-USD", size: "0.5", at: T0 });
+  assert.equal(shared.state.strikePositionBtc, 0, "a shared account's position is everyone's");
+});
+
+test("syncOrder after a stream gap: a fill the stream missed completes the hedge; a canceled market order rests as a limit", async () => {
+  const { h, orders, log } = setup();
+  const r = await h.onFill(fill({ id: "q-1", side: "sell", sizeBtc: 0.001 }));
+  await h.syncOrder({ clientOrderId: r.clientOrderId, status: "FILLED", filledBtc: 0.001, price: 80_010, at: T0 + 2_000 });
+  assert.equal(h.pending.length, 0);
+  assert.deepEqual([h.state.strikePositionBtc, h.state.unhedgedBtc, h.hedges[0].latencyMs, h.hedges[0].hedge.price], [0.001, 0, 2_000, 80_010]);
+  const r2 = await h.onFill(fill({ id: "q-2", side: "buy", sizeBtc: 0.002, at: T0 + 3_000 }));
+  await h.syncOrder({ clientOrderId: r2.clientOrderId, status: "CANCELED", filledBtc: 0.0005, price: 80_000, closeReason: "market_order_exceeded_slippage", at: T0 + 4_000 });
+  assert.deepEqual(h.pending.map((p) => [p.resting, p.sizeBtc]), [[true, 0.0015]], "the part that filled is applied, the rest rests");
+  assert.equal(orders.at(-1).type, "limit");
+  await h.syncOrder({ clientOrderId: "nobody-1", status: "FILLED", filledBtc: 1 });
+  assert.equal(h.state.strikePositionBtc, 0.0005, "an unknown order changes nothing");
+  assert.ok(kinds(log).includes("hedge.resting"));
+});
+
+test("every hedged fill is reported once with how it was closed: netting, a Strike fill, or dust", async () => {
+  const hedgedFills = [];
+  const h = hedger({ mandate: M, symbol: "BTC-USD", minNotionalUsd: 100, strike: { mark: () => MARK, placeOrder: async () => ({}), cancel: async () => ({}) }, now: () => T0, onHedged: (x) => hedgedFills.push([x.fill.id, x.hedge.how, x.hedge.clientOrderIds.length]) });
+  await h.onFill(fill({ id: "a", side: "sell", sizeBtc: 0.00003 }));
+  assert.deepEqual(hedgedFills, [["a", "dust", 0]], "2.4 USD of exposure is dust");
+  const r = await h.onFill(fill({ id: "b", side: "sell", sizeBtc: 0.002 }));
+  await h.onStrikeEvent({ kind: "fill", clientOrderId: r.clientOrderId, side: "BUY", size: "0.002", price: "80000", at: T0 + 500 });
+  await h.onFill(fill({ id: "c", side: "buy", sizeBtc: 0.001 }));
+  await h.onFill(fill({ id: "d", side: "sell", sizeBtc: 0.001 }));
+  assert.deepEqual(hedgedFills.slice(1), [["b", "market", 1], ["c", "netted", 0], ["d", "netted", 0]]);
+});
+
+test("two fills of opposite sides while a hedge is in flight: nothing nets against a flying order; when both orders die the fills net each other and nothing rests", async () => {
+  const { h, orders, cancels, log } = setup();
+  const r1 = await h.onFill(fill({ id: "a", side: "sell", sizeBtc: 0.00142, at: T0 }));
+  const r2 = await h.onFill(fill({ id: "b", side: "buy", sizeBtc: 0.00142, at: T0 + 100 }));
+  assert.deepEqual(orders.map((o) => [o.side, o.type]), [["buy", "market"], ["sell", "market"]], "the second fill gets its own hedge: the first may still fill");
+  assert.deepEqual(h.exposures.map((e) => [e.fillId, e.coveredBy]), [["a", r1.clientOrderId], ["b", r2.clientOrderId]]);
+  assert.equal(h.hedges.length, 0);
+  await h.onStrikeEvent({ kind: "order", clientOrderId: r1.clientOrderId, status: "CANCELED", terminal: true, closeReason: "market_order_exceeded_slippage", at: T0 + 200 });
+  assert.equal(orders.length, 2, "no limit yet: the other order is still in flight and may net it");
+  assert.equal(h.exposures[0].coveredBy, null);
+  await h.onStrikeEvent({ kind: "order", clientOrderId: r2.clientOrderId, status: "EXPIRED", terminal: true, closeReason: "order_expired_in_match", at: T0 + 300 });
+  assert.equal(orders.length, 2, "nothing rests: the two fills net each other");
+  assert.deepEqual(h.hedges.map((x) => [x.fill.id, x.hedge.how]).sort(), [["a", "netted"], ["b", "netted"]]);
+  assert.deepEqual([h.pending.length, h.state.unhedgedBtc, h.state.frozen, cancels.length], [0, 0, false, 0]);
+  assert.deepEqual(kinds(log).filter((k) => k === "frozen" || k === "hedge.resting"), []);
+});
+
+test("a deferred rest: the other order fills, so the dead order's exposure rests as a limit afterwards", async () => {
+  const { h, orders } = setup();
+  const r1 = await h.onFill(fill({ id: "a", side: "sell", sizeBtc: 0.00142, at: T0 }));
+  const r2 = await h.onFill(fill({ id: "b", side: "buy", sizeBtc: 0.00142, at: T0 + 100 }));
+  await h.onStrikeEvent({ kind: "order", clientOrderId: r1.clientOrderId, status: "CANCELED", terminal: true, closeReason: "market_order_exceeded_slippage", at: T0 + 200 });
+  await h.onStrikeEvent({ kind: "fill", clientOrderId: r2.clientOrderId, side: "SELL", size: "0.00142", price: "80000", at: T0 + 250 });
+  assert.deepEqual(orders.at(-1) && [orders.at(-1).type, orders.at(-1).side, orders.at(-1).size, orders.at(-1).price, orders.at(-1).clientOrderId], ["limit", "buy", 0.00142, 81_600, `${r1.clientOrderId}-L`]);
+  assert.deepEqual(h.pending.map((p) => [p.resting, p.sizeBtc]), [[true, 0.00142]]);
+  assert.deepEqual(h.hedges.map((x) => [x.fill.id, x.hedge.how]), [["b", "market"]]);
+  assert.equal(h.state.strikePositionBtc, -0.00142);
+  await h.onStrikeEvent({ kind: "fill", clientOrderId: `${r1.clientOrderId}-L`, side: "BUY", size: "0.00142", price: "81600", at: T0 + 9_000 });
+  assert.deepEqual([h.pending.length, h.state.unhedgedBtc, h.state.strikePositionBtc], [0, 0, 0]);
+  assert.deepEqual(h.hedges.at(-1).hedge.how, "limit");
+});
+
+test("a fill on the other side nets a resting limit's exposure but never a flying order's; a partly filled market order rests only what is left", async () => {
+  const { h, orders } = setup();
+  const r1 = await h.onFill(fill({ id: "a", side: "sell", sizeBtc: 0.002, at: T0 }));
+  await h.onStrikeEvent({ kind: "fill", clientOrderId: r1.clientOrderId, side: "BUY", size: "0.0005", price: "80000", at: T0 + 50 });
+  await h.onStrikeEvent({ kind: "order", clientOrderId: r1.clientOrderId, status: "CANCELED", terminal: true, closeReason: "market_order_exceeded_slippage", at: T0 + 100 });
+  assert.deepEqual([orders.at(-1).type, orders.at(-1).size], ["limit", 0.0015], "the filled 0.0005 does not rest again");
+  await h.onFill(fill({ id: "b", side: "buy", sizeBtc: 0.0015, at: T0 + 500 }));
+  assert.deepEqual([h.pending.length, h.state.unhedgedBtc], [0, 0], "the resting limit was pulled and the rest netted");
+  assert.deepEqual(h.hedges.map((x) => [x.fill.id, x.hedge.how, x.hedge.parts.map((p) => p.how)]), [["a", "netted", ["market", "netted"]], ["b", "netted", ["netted"]]]);
+});
+
+test("a carried exposure under Strike's minimum lifts a freeze: nothing can be ordered, so quoting goes on; a later fill completes it", async () => {
+  const { h, orders, log } = setup({ minNotionalUsd: 100, state: { midnightInventoryBtc: 0.0003, unhedgedBtc: 0.0003, frozen: true, frozenReason: "late" } });
+  assert.deepEqual(await h.rehedge(), { placed: false, small: true });
+  assert.deepEqual([h.state.frozen, h.state.unhedgedBtc, orders.length], [false, 0.0003, 0]);
+  assert.ok(kinds(log).includes("carry.small"));
+  assert.ok(log.some((e) => e.kind === "resumed" && /minimum/.test(e.reason)));
+  assert.equal(check({ venue: "midnight", kind: "quote", pair: "tBTC/tUSD", side: "bid", sizeBtc: 0.001, price: MARK * 0.995, ttlSec: 60 }, h.state), null, "not frozen: both sides may quote again");
+  await h.onFill(fill({ id: "q", side: "buy", sizeBtc: 0.0012, at: T0 + 1000 }));
+  assert.deepEqual([orders[0].side, orders[0].size], ["sell", 0.0015], "the carry is hedged together with the new fill");
+});
+
