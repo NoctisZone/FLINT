@@ -27,13 +27,15 @@ export function odatano({ baseUrl = ODATANO_PREPROD, key, network = "preprod", f
   }
   return {
     kind: "odatano",
-    /** Unspent ADA-only outputs of an address, in the Koios shape: [{ tx_hash, tx_index, value }]. */
+    /** Unspent ADA-only outputs of an address, in the Koios shape: [{ tx_hash, tx_index, value, assets: [], script }]. */
     async utxos(address) {
       const { value = [] } = await get(`/odata/v4/cardano/LedgerUTxOs?$filter=address eq '${address}' and spentTxHash eq null`);
-      return value.filter((u) => !(u.assets?.length) && !(u.multiAsset)).map((u) => ({ tx_hash: u.txHash, tx_index: Number(u.outputIndex), value: String(u.lovelace ?? u.value ?? u.amount ?? 0) }));
+      // token coins stay out: the view says that they carry tokens, not which; a reference script is not in this view, so the payment asks Koios for it
+      return value.filter((u) => !u.hasAssets).map((u) => ({ tx_hash: u.txHash, tx_index: Number(u.outputIndex), value: String(u.lovelace ?? 0), assets: [], script: Boolean(u.isScript || u.utxo_referenceScriptHash || u.utxo_inlineDatum || u.utxo_dataHash) }));
     },
+    /** The ADA a transfer can spend: every coin without a script or datum. */
     async balance(address) {
-      return (await this.utxos(address)).reduce((s, u) => s + BigInt(u.value), 0n);
+      return (await this.utxos(address)).filter((u) => !u.script).reduce((s, u) => s + BigInt(u.value), 0n);
     },
     /** An ADA transfer built by ODATANO: the unsigned CBOR to sign with cardano.mjs signTransaction. */
     async buildTransfer({ from, to, lovelace }) {

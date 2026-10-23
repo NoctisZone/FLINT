@@ -49,3 +49,23 @@ test("an ADA-USD plan sizes on a step of one and prices on a tick of 0.0001", ()
   const p = liquidityPlan({ mark: 0.21138571, positionBtc: 0, open: [], sizeBtc: 3784.3, step: 1, tick: 0.0001, maxPositionBtc: 20_000, now: T });
   assert.deepEqual(p.place.map((o) => [o.side, o.size, o.price]), [["buy", 3784, 0.2111], ["sell", 3784, 0.2116]]);
 });
+
+import { sweepPlan } from "../gateway/liquidity.mjs";
+
+const feed = (symbol, { since = T - 90_000, side = "sell", sizeBtc = 1.72, price = 102.05, id = "t-sol-hedge-3-1-L" } = {}) =>
+  [{ agentId: "t-sol", legs: { [symbol]: { resting: 1, restingOrders: [{ clientOrderId: id, side, sizeBtc, price, since: new Date(since).toISOString() }] } } }];
+
+test("sweep: a hedge resting longer than afterMs is taken on the other side at its price, IOC, on the step", () => {
+  const out = sweepPlan({ agents: feed("SOL-USD"), symbol: "SOL-USD", afterMs: 60_000, step: 0.01, tick: 0.01, prefix: "liq-sol", now: T });
+  assert.deepEqual(out, [{ side: "buy", price: 102.05, size: 1.72, clientOrderId: "liq-sol-sweep-t-sol-hedge-3-1-L", timeInForce: "IOC", agent: "t-sol", agentSide: "sell", restingId: "t-sol-hedge-3-1-L", restedSec: 90 }]);
+  const buy = sweepPlan({ agents: feed("SOL-USD", { side: "buy", sizeBtc: 0.015, price: 104.5 }), symbol: "SOL-USD", step: 0.01, tick: 0.01, now: T });
+  assert.deepEqual([buy[0].side, buy[0].size, buy[0].price], ["sell", 0.01, 104.5]);
+});
+
+test("sweep: a younger hedge, one already swept, one on another market and one under the step give nothing", () => {
+  assert.deepEqual(sweepPlan({ agents: feed("SOL-USD", { since: T - 30_000 }), symbol: "SOL-USD", step: 0.01, now: T }), []);
+  assert.deepEqual(sweepPlan({ agents: feed("SOL-USD"), symbol: "SOL-USD", step: 0.01, done: new Set(["t-sol-hedge-3-1-L"]), now: T }), []);
+  assert.deepEqual(sweepPlan({ agents: feed("SOL-USD"), symbol: "BTC-USD", step: 0.00001, now: T }), []);
+  assert.deepEqual(sweepPlan({ agents: feed("SOL-USD", { sizeBtc: 0.004 }), symbol: "SOL-USD", step: 0.01, now: T }), []);
+  assert.deepEqual(sweepPlan({ agents: [{ agentId: "citizen-a" }], symbol: "SOL-USD", now: T }), []);
+});

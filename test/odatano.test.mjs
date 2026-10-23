@@ -16,7 +16,7 @@ function gateway(answers) {
 
 test("utxos come back in the Koios shape, a transfer is built server-side, submit answers the hash, an unknown tx is skipped", async () => {
   const g = gateway((path, call) => {
-    if (path.startsWith("/odata/v4/cardano/LedgerUTxOs")) return { body: { value: [{ txHash: "ab".repeat(32), outputIndex: 1, lovelace: "6399200000" }, { txHash: "cd".repeat(32), outputIndex: 0, lovelace: "2000000", assets: [{ unit: "x" }] }] } };
+    if (path.startsWith("/odata/v4/cardano/LedgerUTxOs")) return { body: { value: [{ txHash: "ab".repeat(32), outputIndex: 1, lovelace: "6399200000" }, { txHash: "cd".repeat(32), outputIndex: 0, lovelace: "2000000", hasAssets: true }] } };
     if (path.endsWith("/BuildSimpleAdaTransaction")) return { body: { unsignedTxCbor: "84a4", fee: "167261", ID: "b-1" } };
     if (path.endsWith("/SubmitSignedTransaction")) return { body: { txHash: "ef".repeat(32), status: "pending", hasErrors: false } };
     if (path.endsWith("/GetTransaction")) return call.body.hash === "11".repeat(32) ? { status: 404, body: { error: { message: "[ODATANO_NOT_FOUND] not found" } } } : { body: { value: JSON.stringify({ hash: call.body.hash, blockHeight: 5319302 }) } };
@@ -24,7 +24,7 @@ test("utxos come back in the Koios shape, a transfer is built server-side, submi
   });
   const o = odatano({ key: "oda_test", fetch: g.fetch });
   const u = await o.utxos("addr_test1vq");
-  assert.deepEqual(u, [{ tx_hash: "ab".repeat(32), tx_index: 1, value: "6399200000" }], "the UTxO with a native asset is left out");
+  assert.deepEqual(u, [{ tx_hash: "ab".repeat(32), tx_index: 1, value: "6399200000", assets: [], script: false }], "the UTxO with a native asset is left out");
   assert.equal(await o.balance("addr_test1vq"), 6_399_200_000n);
   assert.equal(g.calls[0].auth, "Bearer oda_test");
   assert.match(g.calls[0].path, /LedgerUTxOs\?\$filter=address eq 'addr_test1vq' and spentTxHash eq null/);

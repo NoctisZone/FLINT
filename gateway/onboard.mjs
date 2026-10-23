@@ -11,7 +11,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { secretFor } from "../lib/identity.mjs";
-import { buildTransfer, buildUnsignedTransfer, cardanoWallet, cborDecode, decodeUtxoHex, signTransaction, txHashOf, withWitnesses } from "./cardano.mjs";
+import { buildTransfer, buildUnsignedTransfer, cardanoWallet, cborDecode, decodeUtxoHex, koios, signTransaction, spendableOf, txHashOf, withChainFlags, withWitnesses } from "./cardano.mjs";
 import { builderConnect, depositAda } from "./strike-connect.mjs";
 import { MARKETS } from "./markets.mjs";
 
@@ -124,16 +124,20 @@ export function coinSizes({ quoteUsd, mark, headroom = 1.05, decimals = 8 }) {
 export const ORDER_STEPS = ["wallet", "pay", "account", "deposit", "mint", "credit", "open", "register", "quote"];
 /** What the agent's wallet keeps on top of the deposit: Strike's intake margin, the deposit's fee, a change output. */
 export const DEPOSIT_MARGIN = 5_000_000n;
+/** What a payment by plain transfer carries on top, for the fee's way on from the agent's wallet to the project. */
+export const FORWARD_MARGIN = 1_000_000n;
 
 /**
  * The steps of an order for a new agent, over the pieces the gateway hands
  * in. The owner pays once from their own wallet: one transaction with the
  * set-up fee to the project address and the deposit to the agent's own
  * Cardano wallet, signed in their wallet and handed in through the owner
- * API (the `pay` step waits for it). The agent's wallet then makes the
- * Strike deposit itself: Strike builds deposits only for the wallet it
- * registered at builder connect. Every step can run again after a failure:
- * it looks at what is there before it acts.
+ * API (the `pay` step waits for it), or as a plain transfer of the same
+ * money to the agent's wallet from any wallet, the fee then forwarded from
+ * there. The agent's wallet then makes the Strike deposit itself: Strike
+ * builds deposits only for the wallet it registered at builder connect.
+ * Every step can run again after a failure: it looks at what is there
+ * before it acts.
  *
  * @param {object} d
  * @param {string} d.agentId
@@ -159,16 +163,20 @@ export const DEPOSIT_MARGIN = 5_000_000n;
 export function onboardSteps({ agentId, index, mandate, wallet, owner, fee, depositLovelace, mint, market = MARKETS["BTC-USD"], markets = [market], mark, marks, minQuoteUsd = 0, coins = 4, strike, open, register, quoted, waitMs = 45 * 60_000, sleep = wait, now = Date.now, log = () => {} }) {
   const ada = (lovelace) => `${(Number(lovelace) / 1e6).toFixed(0)} tADA`;
   const toAgent = BigInt(depositLovelace) + DEPOSIT_MARGIN;
+  const feeDue = fee.paid ? 0n : BigInt(fee.lovelace);
+  // the other way to pay: this much to the agent's wallet from anywhere; the fee goes on from there
+  const manual = { lovelace: feeDue + toAgent + (feeDue > 0n ? FORWARD_MARGIN : 0n), feeLovelace: feeDue, feeTo: fee.to };
   return {
     async wallet(ctx) {
       ctx.set("cardano", wallet.address);
-      ctx.set("pub", { ...(ctx.data.pub ?? {}), feeLovelace: String(fee.lovelace), feeTo: fee.to, depositLovelace: String(depositLovelace), toAgentLovelace: String(toAgent), owner, paidByX402: Boolean(fee.paid) });
+      ctx.set("pub", { ...(ctx.data.pub ?? {}), feeLovelace: String(fee.lovelace), feeTo: fee.to, depositLovelace: String(depositLovelace), toAgentLovelace: String(toAgent), manualLovelace: String(manual.lovelace), owner, paidByX402: Boolean(fee.paid) });
       return `Cardano wallet ${wallet.address.slice(0, 16)}…, Midnight wallet ${index}`;
     },
     /** The owner's one transaction: the fee (unless x402 paid it) and the deposit money, waited for, then seen on chain. */
     async pay(ctx) {
-      await ownerTransaction(ctx, { chain: strike.chain, wallet, minLovelace: depositLovelace, waitMs, sleep, asking: `waiting for your payment of ${ada((fee.paid ? 0n : BigInt(fee.lovelace)) + toAgent)}, signed in your wallet` });
-      return `${fee.paid ? "deposit money" : `fee ${ada(fee.lovelace)} and deposit money`} paid, tx ${ctx.data.payTx.slice(0, 16)}…`;
+      await ownerTransaction(ctx, { chain: strike.chain, wallet, minLovelace: depositLovelace, waitMs, sleep, manual, asking: `waiting for your payment of ${ada(feeDue + toAgent)}, signed in your wallet, or ${ada(manual.lovelace)} sent to ${wallet.address} from any wallet` });
+      const how = ctx.data.paidBy === "transfer" ? `by a transfer to the agent's wallet${feeDue > 0n ? `, fee forwarded, tx ${ctx.data.payTx.slice(0, 16)}…` : ""}` : `tx ${ctx.data.payTx.slice(0, 16)}…`;
+      return `${fee.paid ? "deposit money" : `fee ${ada(fee.lovelace)} and deposit money`} paid, ${how}`;
     },
     async account(ctx) {
       let account = strike.accounts.read()[agentId];
@@ -245,19 +253,42 @@ export function onboardSteps({ agentId, index, mandate, wallet, owner, fee, depo
   };
 }
 
-/** A transaction the owner signs, delivered to the job as "pay", then seen on chain and on the agent's wallet. */
-async function ownerTransaction(ctx, { chain, wallet, minLovelace, waitMs, sleep, asking }) {
-  if (!ctx.data.payTx) {
+/**
+ * The owner's money for a step: a transaction they sign, delivered to the job
+ * as "pay", or (with `manual`) a plain transfer of `manual.lovelace` that lands
+ * on the agent's wallet from anywhere, seen on its balance every half minute;
+ * the fee in it goes on to the project from the agent's wallet. Then the chain
+ * is waited for.
+ */
+async function ownerTransaction(ctx, { chain, wallet, minLovelace, waitMs, sleep, asking, manual = null }) {
+  if (!ctx.data.payTx && !ctx.data.paidBy) {
     ctx.note(asking);
-    const got = await ctx.waitFor("pay", waitMs);
+    const signed = ctx.waitFor("pay", waitMs);
+    let settled = false;
+    signed.then(() => { settled = true; });
+    const landed = async () => {
+      for (let i = 0; i * 30_000 < waitMs && !settled; i++) { if ((await chain.balance(wallet.address).catch(() => 0n)) >= BigInt(manual.lovelace)) return { transfer: true }; await sleep(30_000); }
+      return signed;
+    };
+    const got = await (manual ? Promise.race([signed, landed()]) : signed);
     if (!got) throw new Error("your payment was not signed in time; sign it and retry");
-    ctx.set("payTx", got.txHash);
+    if (got.transfer) {
+      ctx.stopWaiting?.("pay");
+      ctx.set("paidBy", "transfer");
+      if (BigInt(manual.feeLovelace ?? 0) > 0n) {
+        const t = buildTransfer({ wallet, utxos: await chain.utxos(wallet.address), to: manual.feeTo, lovelace: BigInt(manual.feeLovelace) });
+        await chain.submit(t.cborHex);
+        ctx.set("payTx", t.txHash);
+      }
+    } else { ctx.set("paidBy", "signed"); ctx.set("payTx", got.txHash); }
   }
-  ctx.note("payment sent, waiting for the chain");
-  for (let i = 0; i < 40; i++) { if ((await chain.txInfo([ctx.data.payTx])).length) break; if (i === 39) throw new Error(`payment ${ctx.data.payTx} not seen on chain in time; retry waits again`); await sleep(10_000); }
+  if (ctx.data.payTx) {
+    ctx.note("payment sent, waiting for the chain");
+    for (let i = 0; i < 40; i++) { if ((await chain.txInfo([ctx.data.payTx])).length) break; if (i === 39) throw new Error(`payment ${ctx.data.payTx} not seen on chain in time; retry waits again`); await sleep(10_000); }
+  }
   // the wallet's view of the chain may lag the indexer by a moment
   for (let i = 0; i < 12 && (await chain.balance(wallet.address)) < BigInt(minLovelace); i++) await sleep(10_000);
-  return ctx.data.payTx;
+  return ctx.data.payTx ?? null;
 }
 
 /** The steps of a further deposit into a running agent. */
@@ -281,9 +312,9 @@ export function topUpSteps({ agentId, wallet, owner, lovelace, strike, chain, wa
   return {
     async pay(ctx) {
       ctx.set("cardano", wallet.address);
-      ctx.set("pub", { ...(ctx.data.pub ?? {}), feeLovelace: "0", feeTo: null, depositLovelace: String(lovelace), toAgentLovelace: String(toAgent), owner, paidByX402: false });
-      await ownerTransaction(ctx, { chain, wallet, minLovelace: lovelace, waitMs, sleep, asking: `waiting for your transfer of ${ada(toAgent)}, signed in your wallet` });
-      return `${ada(toAgent)} on the agent's wallet, tx ${ctx.data.payTx.slice(0, 16)}…`;
+      ctx.set("pub", { ...(ctx.data.pub ?? {}), feeLovelace: "0", feeTo: null, depositLovelace: String(lovelace), toAgentLovelace: String(toAgent), manualLovelace: String(toAgent), owner, paidByX402: false });
+      await ownerTransaction(ctx, { chain, wallet, minLovelace: lovelace, waitMs, sleep, manual: { lovelace: toAgent, feeLovelace: 0n, feeTo: null }, asking: `waiting for your transfer of ${ada(toAgent)}, signed in your wallet or sent to ${wallet.address} from any wallet` });
+      return `${ada(toAgent)} on the agent's wallet${ctx.data.payTx ? `, tx ${ctx.data.payTx.slice(0, 16)}…` : ", by a transfer"}`;
     },
     /** The agent's wallet deposits at Strike; the balance before is kept so the credit step knows what to wait for. */
     async deposit(ctx) {
@@ -317,24 +348,32 @@ export function topUpSteps({ agentId, wallet, owner, lovelace, strike, chain, wa
  * the deposit money to the agent's wallet. It comes back as a CIP-30
  * witness set (the page) or as a whole signed transaction (a headless
  * wallet); submitted here, then delivered to the waiting job step. A
- * further deposit is paid the same way, with no fee output.
+ * further deposit is paid the same way, with no fee output. A wallet whose
+ * coins cannot carry it is told the other way: the same money sent to the
+ * agent's wallet from anywhere.
  *
  * @param {object} o
  * @param {(agentId) => object|null} o.jobOf       the running job (deliver, job.data): an order, or a deposit
  * @param {object} o.chain                          Koios or ODATANO client
+ * @param {(address) => Promise<object[]>} [o.lookup]  the chain's view of an address's coins, with scripts and tokens; Koios by default
  */
-export function orderPayments({ jobOf, chain, log = () => {} }) {
+export function orderPayments({ jobOf, chain, lookup = (address) => koios().utxos(address), log = () => {} }) {
   const need = (agentId) => { const j = jobOf(agentId); if (!j) throw Object.assign(new Error("nothing to pay under that name"), { status: 404 }); return j; };
+  // a wallet's hex may leave a coin's reference script out; the chain's view of the address says what sits on each coin
   const utxosOf = async (owner, given) => {
-    if (given?.length) return given.map(decodeUtxoHex).filter((u) => !u.assets && u.address === owner);
-    return chain.utxos(owner);
+    if (!given?.length) return chain.utxos(owner);
+    const list = given.map(decodeUtxoHex).filter((u) => u.address === owner);
+    try { return withChainFlags(list, await lookup(owner)); } catch (err) { log({ kind: "pay.lookup.failed", owner, error: String(err?.message ?? err).slice(0, 120) }); return list; }
   };
+  const ada = (lovelace) => `${(Number(lovelace) / 1e6).toFixed(0)} tADA`;
   const signed = (body) => {
     if (body?.signedTxCbor) { const tx = cborDecode(Buffer.from(String(body.signedTxCbor), "hex")); return { cborHex: String(body.signedTxCbor), txHash: txHashOf(tx.items[0].raw) }; }
     if (body?.witnessSetHex && body?.unsignedTxCbor) return withWitnesses(String(body.unsignedTxCbor), String(body.witnessSetHex));
     throw Object.assign(new Error("send signedTxCbor, or unsignedTxCbor with witnessSetHex"), { status: 400 });
   };
   return {
+    /** What a payment can spend of an owner's coins (CIP-30 hex): coins with a script or datum stay out. */
+    async spendable(owner, utxos) { return spendableOf(await utxosOf(owner, utxos)); },
     /** The payment, unsigned, over the owner's UTxOs (CIP-30 hex when the page sends them, else the chain's). */
     async build(agentId, { utxos } = {}) {
       const j = need(agentId);
@@ -342,9 +381,12 @@ export function orderPayments({ jobOf, chain, log = () => {} }) {
       if (!pub?.toAgentLovelace) throw Object.assign(new Error("nothing to pay yet"), { status: 409 });
       const outputs = [...(pub.paidByX402 || BigInt(pub.feeLovelace) === 0n ? [] : [{ to: pub.feeTo, lovelace: BigInt(pub.feeLovelace) }]), { to: cardano, lovelace: BigInt(pub.toAgentLovelace) }];
       const list = await utxosOf(pub.owner, utxos);
-      if (!list.length) throw Object.assign(new Error("no ADA-only UTxOs on the owner's address"), { status: 400 });
-      const t = buildUnsignedTransfer({ from: pub.owner, utxos: list, outputs });
-      return { unsignedTxCbor: t.cborHex, txHash: t.txHash, outputs: outputs.map((o) => ({ to: o.to, lovelace: String(o.lovelace) })), total: String(outputs.reduce((s, o) => s + o.lovelace, 0n)) };
+      const otherWay = `Or send ${ada(pub.manualLovelace ?? pub.toAgentLovelace)} to the agent's wallet ${cardano} from any wallet; the order goes on when it lands.`;
+      if (!list.length) throw Object.assign(new Error(`no coins of ${pub.owner.slice(0, 16)}… in what the wallet gave. ${otherWay}`), { status: 400 });
+      let t;
+      // two witnesses paid for: a wallet may sign with its stake key too
+      try { t = buildUnsignedTransfer({ from: pub.owner, utxos: list, outputs, witnesses: 2 }); } catch (err) { if (!/not enough ADA/.test(err.message)) throw err; throw Object.assign(new Error(`${err.message}. ${otherWay}`), { status: 400 }); }
+      return { unsignedTxCbor: t.cborHex, txHash: t.txHash, fee: String(t.fee), outputs: outputs.map((o) => ({ to: o.to, lovelace: String(o.lovelace) })), total: String(outputs.reduce((s, o) => s + o.lovelace, 0n)) };
     },
     async submit(agentId, body) {
       const j = need(agentId);

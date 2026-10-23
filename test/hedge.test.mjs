@@ -64,6 +64,7 @@ test("a fill on the other side nets the older exposure first; the resting limit 
   await h.onFill(fill({ id: "a", side: "buy", sizeBtc: 0.002, at: T0 }));
   await h.onStrikeEvent({ kind: "order", clientOrderId: orders[0].clientOrderId, status: "CANCELED", terminal: true, closeReason: "market_order_exceeded_slippage", at: T0 + 100 });
   assert.equal(h.pending[0].resting, true);
+  assert.equal(h.pending[0].price, orders[1].price, "the resting limit's price is on the pending entry");
   clock(T0 + 4_000);
   await h.onFill(fill({ id: "b", side: "sell", sizeBtc: 0.0015, at: T0 + 4_000 }));
   assert.deepEqual(h.hedges.map((x) => [x.fill.id, x.hedge.how, x.latencyMs]), [["b", "netted", 0]], "b is hedged on arrival; a is only partly netted");

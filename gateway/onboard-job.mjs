@@ -39,6 +39,8 @@ export function onboardJob({ agentId, index, owner, mind, kind = "onboard", orde
         touch();
       });
     },
+    /** The step got `what` another way: the wait ends with null. */
+    stopWaiting(what) { const w = waiting.get(what); if (!w) return; clearTimer(w.timer); waiting.delete(what); touch(); w.resolve(null); },
   };
   let running = null;
 

@@ -9,7 +9,7 @@
 import crypto from "node:crypto";
 import { blake2b } from "@noble/hashes/blake2b";
 import { bech32 } from "@scure/base";
-import { verifySignData } from "./cardano.mjs";
+import { verifySignData , decodeUtxoHex, spendableOf } from "./cardano.mjs";
 import { assertMandate, mandateHash } from "./mandate.mjs";
 import { assertMarkets } from "./markets.mjs";
 
@@ -200,6 +200,13 @@ export function ownerApi({ agents, gateway, onMandate = async () => {}, onboardi
       if (!agentOf(s.address, id)) return notYours;
       try { const r = await strikeKeys.rotate(id); log({ kind: "owner.strike.rotated", agent: id, accountId: r.accountId, publicKey: r.publicKey }); return { status: 200, body: { ok: true, agentId: id, ...r } }; } catch (err) { return trouble(err); }
     },
+    /** What a payment can spend of the session's wallet, from the CIP-30 UTxOs the page sends: coins with a script or datum stay out. */
+    async spendable(s, body) {
+      if (!Array.isArray(body?.utxos)) return { status: 400, body: { error: "utxos: the wallet's CIP-30 UTxOs, hex" } };
+      let r;
+      try { r = payments ? await payments.spendable(s.address, body.utxos.map(String)) : spendableOf(body.utxos.map((h) => decodeUtxoHex(String(h))).filter((u) => u.address === s.address)); } catch (err) { return { status: 400, body: { error: `utxos: ${err.message}` } }; }
+      return { status: 200, body: { address: s.address, totalLovelace: String(r.totalLovelace), spendableLovelace: String(r.spendableLovelace), onScriptsLovelace: String(r.onScriptsLovelace), coins: r.coins, withTokens: r.withTokens, withScripts: r.withScripts } };
+    },
     /** The owner's one payment of an order (fee and deposit money), built for their wallet and handed back signed. */
     async payment(s, id, what, body) {
       if (!payments) return { status: 501, body: { error: "orders are off on this gateway" } };
@@ -298,6 +305,7 @@ export function ownerApi({ agents, gateway, onMandate = async () => {}, onboardi
       if (path === "session" && req.method === "GET") return send(res, api.whoami(s)), true;
       if (path === "session" && req.method === "DELETE") return send(res, api.logout(s.token)), true;
       if (path === "agents" && req.method === "GET") return send(res, api.agentsOf(s)), true;
+      if (path === "wallet/spendable" && req.method === "POST") return send(res, await api.spendable(s, body)), true;
       if (path === "agents" && req.method === "POST") {
         const c = api.check(s, body);
         if (c.error) return send(res, c.error), true;

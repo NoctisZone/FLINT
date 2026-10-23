@@ -193,7 +193,7 @@ export function hedger({ mandate, symbol, strike, check = defaultCheck, log = ()
     const mineToCover = exposures.filter((e) => !covered(e) && Math.sign(e.remaining) === Math.sign(need));
     const oldest = mineToCover.reduce((m, e) => Math.min(m, e.at), now());
     const clientOrderId = rest ? `${rest}-L` : `${prefix}hedge-${++seq}-${now()}`;
-    const p = { side, sizeBtc, filledBtc: 0, resting: Boolean(rest), deadline: oldest + mandate.risk.hedgeWithinSec * 1000, placedAt: now(), lateLogged: false };
+    const p = { side, sizeBtc, filledBtc: 0, resting: Boolean(rest), price: rest ? price : null, deadline: oldest + mandate.risk.hedgeWithinSec * 1000, placedAt: now(), lateLogged: false };
     pending.set(clientOrderId, p);
     for (const e of mineToCover) e.coveredBy = rest ? null : clientOrderId;
     restDue = null;
@@ -302,7 +302,7 @@ export function hedger({ mandate, symbol, strike, check = defaultCheck, log = ()
     /** Stop means flat: resting limits pulled, one market order for what is unhedged; a dead one rests again by itself. */
     flatten: () => rebalance(),
     get state() { return view(); },
-    get pending() { return [...pending.entries()].map(([id, p]) => ({ clientOrderId: id, side: p.side, sizeBtc: p.sizeBtc, filledBtc: p.filledBtc, resting: p.resting, deadline: p.deadline, placedAt: p.placedAt })); },
+    get pending() { return [...pending.entries()].map(([id, p]) => ({ clientOrderId: id, side: p.side, sizeBtc: p.sizeBtc, filledBtc: p.filledBtc, resting: p.resting, price: p.price ?? null, deadline: p.deadline, placedAt: p.placedAt })); },
     get exposures() { return exposures.map((e) => ({ fillId: e.fill.id, remaining: e.remaining, at: e.at, coveredBy: covered(e) ? e.coveredBy : null })); },
     get hedges() { return done.slice(); },
     /** The slowest hedge of a fill in this run; a book carried from the last run is not a fill. */

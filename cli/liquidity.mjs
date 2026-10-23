@@ -13,9 +13,12 @@
  * at the mark), LIQUIDITY_SPREAD_BPS (10), LIQUIDITY_REDUCE_BPS (5),
  * LIQUIDITY_MAX_POSITION_USD (4000), LIQUIDITY_EVERY_MS (5000).
  * LIQUIDITY_SIZE_BTC and LIQUIDITY_MAX_POSITION_BTC still set BTC-USD alone.
+ * LIQUIDITY_SWEEP_SEC (60, 0 = off): an agent's hedge that has rested this
+ * long is taken at its price, cap or not, read from the gateway's agents
+ * feed at LIQUIDITY_FEED_URL (http://127.0.0.1:4482).
  */
 import { strikeClient, TESTNET } from "../gateway/strike.mjs";
-import { liquidityPlan } from "../gateway/liquidity.mjs";
+import { liquidityPlan, sweepPlan } from "../gateway/liquidity.mjs";
 
 const log = (...x) => console.log(`[${new Date().toISOString().slice(11, 19)}]`, ...x);
 const num = (name, dflt) => (process.env[name] ? Number(process.env[name]) : dflt);
@@ -27,6 +30,8 @@ const sizeUsd = num("LIQUIDITY_SIZE_USD", 800);
 const maxPositionUsd = num("LIQUIDITY_MAX_POSITION_USD", 4000);
 const spreadBps = num("LIQUIDITY_SPREAD_BPS", 10), reduceBps = num("LIQUIDITY_REDUCE_BPS", 5);
 const everyMs = num("LIQUIDITY_EVERY_MS", 5000);
+const sweepSec = num("LIQUIDITY_SWEEP_SEC", 60);
+const feedUrl = (process.env.LIQUIDITY_FEED_URL || "http://127.0.0.1:4482").replace(/\/$/, "");
 
 const c = strikeClient({ baseUrl: process.env.STRIKE_API_URL || TESTNET, privateKeyHex: key });
 await c.syncClock();
@@ -46,7 +51,33 @@ async function mine(b) {
   return (r.orders ?? []).filter((o) => String(o.ClientOrderID ?? "").startsWith(`${b.prefix}-`)).map((o) => ({ clientOrderId: o.ClientOrderID, side: String(o.Side).toLowerCase(), price: Number(o.Price) }));
 }
 
-async function tickOnce(b) {
+const swept = new Set();
+let feedWarnedAt = 0;
+/** The gateway's agents feed, or null when it does not answer (said once a minute). */
+async function agentsFeed() {
+  try {
+    const res = await fetch(`${feedUrl}/feed/agents`, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) throw new Error(`feed ${res.status}`);
+    const j = await res.json();
+    return Array.isArray(j) ? j : j.agents ?? [];
+  } catch (err) {
+    if (Date.now() - feedWarnedAt > 60_000) { feedWarnedAt = Date.now(); log(`feed ${feedUrl}: ${err.message.slice(0, 100)}; no sweep this round`); }
+    return null;
+  }
+}
+
+/** Hedges that rested too long on this book are taken at their price, IOC, whatever our position is. */
+async function sweep(b, agents) {
+  for (const o of sweepPlan({ agents, symbol: b.symbol, afterMs: sweepSec * 1000, step: b.step, tick: b.tick, prefix: b.prefix, done: swept })) {
+    swept.add(o.restingId);
+    try {
+      await c.placeOrder({ symbol: b.symbol, side: o.side, type: "limit", size: o.size, price: o.price, timeInForce: "IOC", clientOrderId: o.clientOrderId });
+      log(`${b.symbol} sweep: took ${o.agent} ${o.agentSide} ${o.size} at ${o.price} (rested ${o.restedSec} s)`);
+    } catch (err) { log(`${b.symbol} sweep ${o.agent}: ${err.message.slice(0, 120)}`); }
+  }
+}
+
+async function tickOnce(b, agents) {
   const mark = Number((await c.markPrice(b.symbol)).p);
   // an engine whose smallest limit price sits above the mark rejects every order: say so once, quote nothing
   if (b.minPrice > mark) { if (!b.skipped) { b.skipped = true; log(`${b.symbol}: the engine's smallest limit price is ${b.minPrice} USD, above the mark ${mark}; no quotes until that changes`); } return; }
@@ -71,6 +102,7 @@ async function tickOnce(b) {
       log(`${b.symbol} ${o.side} ${o.size} at ${o.price} (mark ${mark}, position ${positionBtc})`);
     } catch (err) { log(`${b.symbol} place ${o.side} at ${o.price}: ${err.message.slice(0, 120)}`); }
   }
+  if (agents) await sweep(b, agents);
 }
 
 async function stop() {
@@ -85,7 +117,7 @@ process.on("SIGTERM", stop);
 
 for (;;) {
   if (stopping) break;
-  try { for (const b of books.values()) await tickOnce(b); } catch (err) {
+  try { const agents = sweepSec > 0 ? await agentsFeed() : null; for (const b of books.values()) await tickOnce(b, agents); } catch (err) {
     log(`loop: ${err.message.slice(0, 160)}`);
     // a rate limit or an outage: back off, then resync the clock
     await new Promise((r) => setTimeout(r, everyMs * 3));

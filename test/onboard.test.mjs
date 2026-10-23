@@ -121,11 +121,11 @@ function stand({ accounts, creditAfter = 1, mintFails = 0, paid = null, waitMs =
     open: async () => ({ name: "trader-5" }), register: async (trader, ctx) => { calls.registered = trader.name; ctx.set("toolsKey", "flint_test"); quotes = 1; }, quoted: () => quotes > 0,
     sleep: noSleep, now: () => (t += 20_000), log: () => {},
   });
-  const payments = orderPayments({ jobOf: (id) => (id === "nova-7" ? stand.job : null), chain });
-  return { steps, calls, payments, owner, agent, client };
+  const payments = orderPayments({ jobOf: (id) => (id === "nova-7" ? stand.job : null), chain, lookup: async () => [] });
+  return { steps, calls, payments, owner, agent, client, balances };
 }
 // an unsigned deposit transaction shaped like the one Strike builds: a body map, an empty witness set, valid, no auxiliary data
-import { cborEncode, cborDecode, signTransaction } from "../gateway/cardano.mjs";
+import { addressBytesOf, cborEncode, cborDecode, signTransaction } from "../gateway/cardano.mjs";
 const W = agentWallet(MASTER, "nova-7");
 const UNSIGNED = Buffer.concat([Buffer.from([0x84]), Buffer.from(cborEncode(new Map([[0n, [[Buffer.from("ad".repeat(32), "hex"), 0n]]], [1n, [[new Uint8Array(29), 500_000_000n], [W.addressBytes, 4_800_000n]]], [2n, 200_000n]]))), Buffer.from(cborEncode(new Map())), Buffer.from([0xf5, 0xf6])]).toString("hex");
 // timers the job's waits use: fired by hand
@@ -154,7 +154,7 @@ test("an order paid from the wallet: the job waits for the owner's one transacti
     assert.deepEqual(built.outputs, [{ to: PAY_TO, lovelace: "20000000" }, { to: agent.address, lovelace: "505000000" }]);
     assert.equal(built.total, "525000000");
     const body = cborDecode(Buffer.from(built.unsignedTxCbor, "hex")).value[0];
-    assert.deepEqual(body.get(1n).map((o) => o[1]), [20_000_000n, 505_000_000n, 900_000_000n - 525_000_000n - 200_000n], "fee, deposit money, change");
+    assert.deepEqual(body.get(1n).map((o) => o[1]), [20_000_000n, 505_000_000n, 900_000_000n - 525_000_000n - BigInt(built.fee)], "fee, deposit money, change");
     const signedPay = signTransaction(built.unsignedTxCbor, treasuryWallet(MASTER));
     const f = await payments.submit("nova-7", { signedTxCbor: signedPay.cborHex });
     assert.equal(f.txHash, "cd".repeat(32));
@@ -244,7 +244,7 @@ test("a further deposit: the job waits for the owner's transfer to the agent's w
   let t = 0;
   const steps = topUpSteps({ agentId: "nova-7", wallet: agent, owner, lovelace: 100_000_000n, strike, chain, sleep: noSleep, now: () => (t += 20_000) });
   const j = onboardJob({ agentId: "nova-7", index: null, owner, mind: null, kind: "deposit", order: TOPUP_STEPS, spec: { lovelace: "100000000" }, steps, now: () => 0, setTimer, clearTimer });
-  const payments = orderPayments({ jobOf: () => j, chain });
+  const payments = orderPayments({ jobOf: () => j, chain, lookup: async () => [] });
   const run = j.run();
   for (let i = 0; i < 20 && !j.waitingFor.includes("pay"); i++) await tick();
   const v0 = j.view();
@@ -272,4 +272,29 @@ test("a further deposit: the job waits for the owner's transfer to the agent's w
   asks = 10;
   assert.equal((await j2.retry()).status, "done");
   assert.equal(calls.builds.length, 2, "the retry waits for the credit, it does not deposit again");
+});
+
+test("the same money sent to the agent's wallet from anywhere pays an order too: the step sees it on the balance, forwards the fee, and stops asking for a signature", async () => {
+  const accounts = accountsFile(path.join(tmp(), "acc.json"));
+  const s = stand({ accounts });
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = globalThis.__connect;
+  try {
+    const j = jobOf(s.steps);
+    stand.job = j;
+    // fee 20 + deposit 500 + 5 margin + 1 for the fee's way on
+    assert.equal(j.view().manualLovelace, undefined);
+    s.balances.agent = 526_000_000n;
+    const r = await j.run();
+    assert.equal(r.status, "done", r.error);
+    const v = j.view();
+    assert.equal(v.manualLovelace, "526000000");
+    assert.match(v.steps[1].detail, /fee 20 tADA and deposit money paid, by a transfer to the agent's wallet, fee forwarded, tx [0-9a-f]{16}…/);
+    assert.deepEqual(j.waitingFor, [], "the wait for a signed transaction ended with the transfer");
+    // the forwarded fee: one transfer from the agent's wallet to the project address, then the Strike deposit
+    const fee = cborDecode(Buffer.from(s.calls.submits[0], "hex")).items[0].value;
+    assert.deepEqual(fee.get(1n)[0][1], 20_000_000n);
+    assert.equal(Buffer.from(fee.get(1n)[0][0]).toString("hex"), Buffer.from(addressBytesOf(PAY_TO)).toString("hex"));
+    assert.equal(s.calls.submits.length, 2);
+  } finally { globalThis.fetch = origFetch; }
 });
