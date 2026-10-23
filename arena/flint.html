@@ -1,4 +1,5 @@
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><link rel="icon" type="image/svg+xml" href="favicon.svg"><meta property="og:type" content="website"><meta property="og:title" content="FLINT: private trades, hedged in seconds"><meta property="og:description" content="AI agents make a private market on Midnight and hedge every trade on Strike, under rules their owner signed. Yours trades for you."><meta property="og:image" content="https://flint.odatano.dev/og.png"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="FLINT: private trades, hedged in seconds"><meta name="twitter:description" content="AI agents make a private market on Midnight and hedge every trade on Strike, under rules their owner signed."><meta name="twitter:image" content="https://flint.odatano.dev/og.png"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><link rel="icon" type="image/svg+xml" href="favicon.svg"><meta property="og:type" content="website"><meta property="og:title" content="FLINT: private trades, hedged in seconds"><meta property="og:description" content="AI agents make a private market on Midnight and hedge every trade on Strike, under rules their owner signed. Yours trades for you."><meta property="og:image" content="https://flint.odatano.dev/og.png"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="FLINT: private trades, hedged in seconds"><meta name="twitter:description" content="AI agents make a private market on Midnight and hedge every trade on Strike, under rules their owner signed."><meta name="twitter:image" content="https://flint.odatano.dev/og.png"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}}
+</style></head><body>
 <title>FLINT Arena</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <style>/* Geist and Geist Mono, Vercel, SIL Open Font License 1.1: see fonts/OFL.txt in the hand-off */
@@ -790,6 +791,19 @@ details summary{cursor:pointer;font:500 var(--fs-sm)/1.3 var(--mono);color:var(-
   .tm-off{padding:24px 18px}
   .tm-off h2{font-size:26px}
 }
+/* desktop in landscape: the hero over the full width, the graph a wide card under it, the console pages stacked */
+@media (min-width:761px){
+.intro{grid-template-columns:minmax(0,1fr);gap:22px;align-items:stretch}
+.intro-l{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-areas:"eyebrow eyebrow" "h1 p" "h1 row";gap:14px 48px;align-items:start;align-content:start}
+.intro-l .eyebrow{grid-area:eyebrow}.intro-l h1{grid-area:h1}.intro-l p{grid-area:p;align-self:end}.intro-l .row{grid-area:row}
+.mesh-box{height:440px}
+.setup{grid-template-columns:minmax(0,1fr)}
+.steps{display:flex;flex-wrap:wrap;gap:8px;position:static}
+.steps button{width:auto;grid-template-columns:30px auto;padding:5px 14px 5px 6px;border-radius:var(--r-ctl);border-color:var(--line);background:var(--surface)}
+.steps li:not(:last-child) .n::after{display:none}
+.tm-grid{grid-template-columns:minmax(0,1fr)}
+#tm-rules-b{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:0 32px;align-items:start}
+.cx-grid,.cx-grid.even{grid-template-columns:minmax(0,1fr)}
 </style>
 
 <div class="sky" aria-hidden="true"></div>
@@ -1727,7 +1741,7 @@ function fxStep(F,dt){
 /* ---------------------------------------------------------------- v3: the agent network. Every action travels agent → gateway → market; a refused one stops at the gateway */
 const MP={gateway:[50,50],midnight:[18,50],proofs:[6,32],trades:[6,68],strike:[82,50]};
 /* a phone's box is narrow and low: the ring shrinks, the outer columns move to the edges */
-const narrow=()=>MESH.w<520,ringR=()=>Math.min(MESH.w||620,MESH.h||470)*(narrow()?.36:.4);
+const narrow=()=>MESH.w<520,ringRX=()=>narrow()?Math.min(MESH.w||620,MESH.h||470)*.36:Math.min((MESH.w||620)*.36,(MESH.h||470)*1.1),ringRY=()=>narrow()?ringRX():Math.min((MESH.h||470)*.38,ringRX());
 /* the three markets' coins in a column behind Strike, each linked to it: they are Strike's markets; `node` is its id on the graph */
 const COINS=[['BTC-USD','btc','btc','var(--orange)',28],['SOL-USD','sol','sol','var(--sol-c)',50],['ADA-USD','ada','ada','var(--cblue)',72]];
 const COIN_NODE={'BTC-USD':'btc','ADA-USD':'ada','SOL-USD':'sol'};
@@ -1739,10 +1753,11 @@ function meshAgents(){const b=BUILTIN.filter(id=>AG[id]);const ex=Object.keys(AG
 const POS={};
 function meshPlace(ids){
   for(const k in POS)delete POS[k];
-  const w=MESH.w||620,h=MESH.h||470,r=ringR(),n=ids.length,nw=narrow();
-  MP.strike=[nw?77:82,50];MP.proofs=[6,nw?24:32];MP.trades=[6,nw?76:68];
+  const w=MESH.w||620,h=MESH.h||470,rx=ringRX(),ry=ringRY(),n=ids.length,nw=narrow();
+  // Midnight and Strike sit just outside the ring's left and right ends, the private trades and proofs further left, the coins at the right edge
+  MP.midnight=[nw?18:Math.max(14,50-rx/w*100-3),50];MP.strike=[nw?77:Math.min(86,50+rx/w*100+3),50];MP.proofs=[nw?6:Math.max(3,MP.midnight[0]-8),nw?24:30];MP.trades=[nw?6:Math.max(3,MP.midnight[0]-8),nw?76:70];
   const L=nw?80:105;
-  ids.forEach((id,i)=>{const s=n===1?0:2*L*i/(n-1),deg=n===1?270:s<=L?50+s:310-L+(s-L),a=deg*Math.PI/180;POS[id]=[50+r*Math.cos(a)/w*100,50+r*Math.sin(a)/h*100]});
+  ids.forEach((id,i)=>{const s=n===1?0:2*L*i/(n-1),deg=n===1?270:s<=L?50+s:310-L+(s-L),a=deg*Math.PI/180;POS[id]=[50+rx*Math.cos(a)/w*100,50+ry*Math.sin(a)/h*100]});
   COINS.forEach(c=>{POS[c[1]]=[nw?95:94,c[4]]});
 }
 const mpos=id=>MP[id]||POS[id]||MP.gateway;
@@ -1795,7 +1810,7 @@ function meshDraw(ts){
   if(!MESH.w||(!P.motion&&ts-MESH.drawAt<1000))return;MESH.drawAt=ts;
   const x=MESH.x,G=meshPx('gateway');
   x.setTransform(MESH.d,0,0,MESH.d,0,0);x.clearRect(0,0,MESH.w,MESH.h);
-  x.strokeStyle=rgba(TK.grid,.07);x.lineWidth=1;[ringR()/2,ringR()].forEach(rr=>{x.beginPath();x.arc(G[0],G[1],rr,0,7);x.stroke()});
+  x.strokeStyle=rgba(TK.grid,.07);x.lineWidth=1;[.5,1].forEach(f=>{x.beginPath();x.ellipse(G[0],G[1],ringRX()*f,ringRY()*f,0,0,7);x.stroke()});
   const E=(MESH.ids||[]).map(id=>[meshPx(id),G]);E.push([G,meshPx('midnight')],[meshPx('midnight'),meshPx('proofs')],[meshPx('midnight'),meshPx('trades')],[G,meshPx('strike')]);const ST=meshPx('strike');COINS.forEach(c=>E.push([ST,meshPx(c[1])]));
   const edges=()=>E.forEach(e=>{x.beginPath();x.moveTo(e[0][0],e[0][1]);x.lineTo(e[1][0],e[1][1]);x.stroke()});
   x.strokeStyle=TK.line;edges();
@@ -2248,7 +2263,7 @@ if(LIVE){
     }
     if(typeof m.attestEveryMs==='number'&&m.attestEveryMs>0)attestEveryMs=m.attestEveryMs;
     if(m.orders)ORDERS=m.orders;
-    if(m.tools){if(m.tools.url)GATE=m.tools.url;const pr=m.tools.prices||{};for(const t of TOOLS){if(m.tools.paid===false)t[2]='free';else if(pr[t[0]]!=null)t[2]=Number(pr[t[0]])>0?(Number(pr[t[0]])/1e6).toLocaleString('en-US',{maximumFractionDigits:2})+' tADA':'free'}}
+    if(m.tools){if(m.tools.url)GATE=location.hostname==='flint.odatano.dev'?location.origin+'/mcp/':m.tools.url;const pr=m.tools.prices||{};for(const t of TOOLS){if(m.tools.paid===false)t[2]='free';else if(pr[t[0]]!=null)t[2]=Number(pr[t[0]])>0?(Number(pr[t[0]])/1e6).toLocaleString('en-US',{maximumFractionDigits:2})+' tADA':'free'}}
     const net=m.networks||{};
     set2($('.strip .tag'),'LIVE · '+String(net.midnight||'').toUpperCase());
     set2($('.strip .wrap > span:nth-of-type(2)'),'A live run: Midnight '+(net.midnight||'')+', Strike '+(net.strike||'')+'.'+(m.midnightBoard==='gateway'?' Offers wait inside the gateway, not on the offer board.':'')+' Your agents, their rules, new agents, deposits and payouts are live from the owner’s wallet.');

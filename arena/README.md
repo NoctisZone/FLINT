@@ -6,7 +6,7 @@ One file, `flint.html`: HTML, CSS and vanilla JavaScript, no build step, the fon
 
 The page decides where its numbers come from when it loads:
 
-- `?feed=<url>` polls that feed (the URL of a `/feed/` prefix, for example `https://host/flint-live/feed/`).
+- `?feed=<url>` polls that feed (the URL of a `/feed/` prefix, for example `https://flint.odatano.dev/feed/`).
 - a `<meta name="flint-feed" content="…">` in the page does the same.
 - served over http(s) without either, it polls `feed/` next to itself. The gateway and the mock feed both serve the page at `/` and their feed under `/feed/`, so `npm run mock-feed` and `npm run gateway` each give a working page.
 - opened as a file, or with `?feed=demo`, it runs its own simulation: made-up numbers in the feed's shape, time running faster than a live run.
