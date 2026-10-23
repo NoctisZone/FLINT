@@ -10,7 +10,12 @@ import path from "node:path";
 
 const KEEP = 2000;
 
-export function feedState({ runStart = new Date().toISOString(), networks = { midnight: "preprod", strike: "testnet" } } = {}) {
+/**
+ * @param {object} [o]
+ * @param {Record<string, Array<{t: string, p: number}>>} [o.marks]   each market's recent marks from the last run, so a chart carries on across a restart
+ * @param {(marks: Record<string, Array<{t: string, p: number}>>) => void} [o.onMarks]   called after every setMarks with the rings to keep
+ */
+export function feedState({ runStart = new Date().toISOString(), networks = { midnight: "preprod", strike: "testnet" }, marks: savedMarks = null, onMarks = () => {} } = {}) {
   const s = {
     meta: { runStart, networks, strikeMark: null, sponsorReady: null, strikeLiquidity: null, midnightBoard: "server", attestEveryMs: null, tools: null, owner: false, orders: null, marks: [], markets: {}, serverTime: null },
     agents: new Map(),  // agentId → card
@@ -18,6 +23,9 @@ export function feedState({ runStart = new Date().toISOString(), networks = { mi
     fills: [], decisions: [], refusals: [], proofs: new Map(),
     capital: null, revenue: null,
   };
+  // the last run's marks carry on: a chart is full on the first poll and the line does not start from nothing after a restart
+  if (savedMarks) for (const [sym, ring] of Object.entries(savedMarks)) if (Array.isArray(ring) && ring.length) s.meta.markets[sym] = { mark: ring[ring.length - 1].p, funding: null, marks: ring.slice(-240) };
+  if (s.meta.markets["BTC-USD"]) { s.meta.strikeMark = s.meta.markets["BTC-USD"].mark; s.meta.marks = s.meta.markets["BTC-USD"].marks; }
   const push = (list, item) => { list.unshift(item); if (list.length > KEEP) list.length = KEEP; };
   return {
     /** The mark now, and the last two hours of marks for a chart that is full on the first poll. */
@@ -32,6 +40,7 @@ export function feedState({ runStart = new Date().toISOString(), networks = { mi
         slot.marks.push({ t, p: m.mark }); if (slot.marks.length > 240) slot.marks.shift();
       }
       if (marks["BTC-USD"]?.mark) { s.meta.strikeMark = marks["BTC-USD"].mark; s.meta.marks = s.meta.markets["BTC-USD"].marks; }
+      onMarks(Object.fromEntries(Object.entries(s.meta.markets).map(([sym, slot]) => [sym, slot.marks])));
     },
     setSponsor: (ready) => { s.meta.sponsorReady = ready; },
     /** Who stands on the other side of the hedges on a venue without a market maker; null when it is the real book. */
@@ -47,6 +56,8 @@ export function feedState({ runStart = new Date().toISOString(), networks = { mi
     /** What a new agent costs its owner: fee by mind, tools key, the smallest deposit, where the fee goes; null when orders are off. */
     setOrders: (o) => { s.meta.orders = o; },
     agent: (agentId, card) => { s.agents.set(agentId, { agentId, ...(s.agents.get(agentId) ?? {}), ...card }); },
+    /** A cancelled order leaves the Arena. */
+    agentGone: (agentId) => { s.agents.delete(agentId); },
     quoteOpen: (q) => { s.quotes.set(q.quoteId, q); },
     quoteGone: (quoteId) => { s.quotes.delete(quoteId); },
     fill: (f) => push(s.fills, f),

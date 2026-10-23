@@ -92,7 +92,8 @@ export function makerDecision(v, { spreadBps = 25, requoteBps, ttlSec, sizeUsd, 
 /**
  * A citizen's mind: takes the best quote on its side when it sits within
  * `tolBps` of the mark, with probability `rate` per look, if the wallet can
- * pay. `side` is what the citizen wants to do with BTC: "buy" takes asks;
+ * pay. `v.base` names the coin for the reason (BTC, ADA, SOL). `side` is what
+ * the citizen wants to do with it: "buy" takes asks;
  * "auto" sells when more than half its worth is BTC and buys otherwise, so
  * the coins keep circulating.
  */
@@ -114,7 +115,7 @@ export function citizenDecision(v, { side: wanted = "buy", tolBps = 60, rate = 0
     if (offBps > tolBps) { why ??= `best ${want} is ${Math.round(offBps)} bps off the mark, more than ${tolBps}`; continue; }
     const canPay = want === "ask" ? v.holdings.spendable.usd >= best.sizeBtc * best.price : v.holdings.spendable.btc >= best.sizeBtc;
     if (!canPay) { why ??= "cannot pay for it in one half"; continue; }
-    return { take: best, reason: `${s}s ${best.sizeBtc} BTC at ${best.price}, ${Math.round(offBps)} bps off the mark${s !== side ? " (the only side on the board)" : ""}` };
+    return { take: best, reason: `${s}s ${best.sizeBtc} ${v.base ?? "BTC"} at ${best.price}, ${Math.round(offBps)} bps off the mark${s !== side ? " (the only side on the board)" : ""}` };
   }
   return { take: null, reason: why ?? "nothing on the board" };
 }

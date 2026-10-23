@@ -22,7 +22,8 @@ const limits = ({ hourUsed = 0, dayUsed = 77.67 } = {}) => ({
   large_withdrawal: { threshold: "50", queue_delay_seconds: 600, estimated_total_delay_seconds: 720 },
 });
 
-function stand({ landsAfter = 2, usd = "all", available = "150.25", lim = limits(), adaUsd = "0.2125" } = {}) {
+/** The agent's wallet holds 5 tADA of its own; Strike's payout lands as one UTxO of `lands` lovelace. */
+function stand({ landsAfter = 2, lands = 96_000_000n, usd = "all", available = "150.25", lim = limits(), adaUsd = "0.2125" } = {}) {
   const wallet = agentWallet(MASTER, "nova-7");
   const owner = treasuryWallet(MASTER).address;
   const calls = { quotes: [], confirms: [], submits: [] };
@@ -36,8 +37,8 @@ function stand({ landsAfter = 2, usd = "all", available = "150.25", lim = limits
   };
   const chain = {
     kind: "koios",
-    balance: async () => (++reads > landsAfter ? 702_000_000n : 2_000_000n),
-    utxos: async () => [{ tx_hash: "ab".repeat(32), tx_index: 0, value: "2000000" }, { tx_hash: "ac".repeat(32), tx_index: 1, value: "700000000" }],
+    balance: async () => (++reads > landsAfter ? 5_000_000n + lands : 5_000_000n),
+    utxos: async () => [{ tx_hash: "ab".repeat(32), tx_index: 0, value: "5000000" }, { tx_hash: "ac".repeat(32), tx_index: 1, value: String(lands) }],
     submit: async (cbor) => { calls.submits.push(cbor); return "ef".repeat(32); },
   };
   let t = T0;
@@ -45,7 +46,7 @@ function stand({ landsAfter = 2, usd = "all", available = "150.25", lim = limits
   return { steps, calls, wallet, owner, strike };
 }
 
-test("all of what Strike lets go: quoted, the message signed by the agent's wallet, confirmed, settled when the wallet balance rises, forwarded to the owner minus what the wallet keeps", async () => {
+test("all of what Strike lets go: quoted, the message signed by the agent's wallet, confirmed, settled when the wallet balance rises, what landed forwarded to the owner", async () => {
   const { steps, calls, wallet, owner } = stand({ available: "20.25" });
   const j = onboardJob({ agentId: "nova-7", index: null, owner, mind: null, kind: "withdraw", order: WITHDRAW_STEPS, spec: { usd: "all" }, steps, now: () => 0 });
   const r = await j.run();
@@ -57,13 +58,26 @@ test("all of what Strike lets go: quoted, the message signed by the agent's wall
   assert.equal(calls.confirms[0].withdraw_id, "wd-1");
   assert.equal("signed_tx_cbor" in calls.confirms[0], false, "no Cardano tx in this quote");
   const v2 = j.view();
-  assert.deepEqual([v2.kind, v2.usd, v2.askedUsd, v2.cappedFromUsd, v2.feeUsd, v2.requestId, v2.strikeStatus, v2.paidOut, v2.txHash], ["withdraw", 20.25, "all", null, "0.5", "req-9", "pending", "698800000", "ef".repeat(32)]);
+  assert.deepEqual([v2.kind, v2.usd, v2.askedUsd, v2.cappedFromUsd, v2.feeUsd, v2.requestId, v2.strikeStatus, v2.paidOut, v2.txHash], ["withdraw", 20.25, "all", null, "0.5", "req-9", "pending", "96000000", "ef".repeat(32)]);
   assert.deepEqual(v2.limit, { limitAda: 100, usedAda: 0, remainingAda: 100, resetsAt: "2026-10-22T12:40:00.000Z", adaUsd: 0.2125 });
   const tx = cborDecode(Buffer.from(calls.submits[0], "hex"));
   const outputs = tx.value[0].get(1n);
-  assert.equal(outputs[0][1], 698_800_000n, "702 on the wallet, 3 kept for Strike's next request, 0.2 fee: 698.8 to the owner");
+  assert.equal(outputs[0][1], 96_000_000n, "the 96 tADA Strike paid go on; the wallet's own 5 stay");
   assert.match(v2.steps[0].detail, /^20\.25 USD quoted, Strike fee 0\.5 USD$/);
-  assert.match(v2.steps.at(-1).detail, /698\.80 tADA sent to your wallet/);
+  assert.match(v2.steps.at(-1).detail, /96\.00 tADA sent to your wallet/);
+});
+
+test("a deposit landing during the payout is not forwarded with it: the forward stops at the quote's worth, nor does it touch what the wallet keeps", async () => {
+  // 700 tADA arrive while Strike's 20.25 USD (95.3 tADA at the quote's rate) are expected: at most five percent over that goes on
+  const big = stand({ available: "20.25", lands: 700_000_000n });
+  const j = onboardJob({ agentId: "nova-7", index: null, owner: "o", mind: null, kind: "withdraw", order: WITHDRAW_STEPS, spec: { usd: "all" }, steps: big.steps, now: () => 0 });
+  assert.equal((await j.run()).status, "done");
+  assert.equal(j.view().paidOut, "100058824");
+  // Strike paid 2 tADA short of the quote and the wallet is thin: what landed goes on, less what the wallet keeps
+  const thin = stand({ available: "20.25", lands: 93_000_000n });
+  const j2 = onboardJob({ agentId: "nova-7", index: null, owner: "o", mind: null, kind: "withdraw", order: WITHDRAW_STEPS, spec: { usd: "all" }, steps: thin.steps, now: () => 0 });
+  assert.equal((await j2.run()).status, "done");
+  assert.equal(j2.view().paidOut, "93000000");
 });
 
 test("a payout above Strike's hourly limit is capped at what is left, the step says so and when the rest can follow; a used-up limit refuses with the time", async () => {

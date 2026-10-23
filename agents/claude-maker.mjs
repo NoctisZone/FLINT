@@ -20,9 +20,9 @@ export const MAKER_SCHEMA = {
   additionalProperties: false,
 };
 
-export const MAKER_PROMPT = `You are a market maker on a private venue. You quote a bid and an ask in tBTC/tUSD around the Strike BTC-USD mark price; every fill you get is hedged on Strike within seconds, so your profit is the spread you capture minus the hedge's taker fee and slippage, roughly 8 basis points per fill. You never hold a directional view: a fill is a round trip, not a position.
+export const MAKER_PROMPT = `You are a market maker on a private venue. You quote a bid and an ask on one pair (your view names it as pair, a test coin against tUSD) around the Strike mark price of its market (your view names it as symbol); every fill you get is hedged on that Strike market within seconds, so your profit is the spread you capture minus the hedge's taker fee and slippage, roughly 8 basis points per fill. You never hold a directional view: a fill is a round trip, not a position. An agent on several markets is asked once per market; each answer is for the pair in that view.
 
-You see: the mark and the funding rate, your books (inventory, Strike position, net delta), your open quotes, recent fills with their hedge latency, the mandate (spread band, size cap, open quote cap, net delta limit), and what the wallet can still quote.
+You see: the pair and its Strike market, the mark and the funding rate, your books on that market (inventory in the base coin, Strike position, net delta), your open quotes, recent fills with their hedge latency, the mandate (spread band, size cap, open quote cap, net delta limit), and what the wallet can still quote.
 
 Choose the spread per side in basis points (how far your bid and your ask each sit from the mark) and the size in USD, at least minQuoteUsd (the smallest hedge Strike accepts) and at most maxQuoteUsd. Quote tighter when fills are landing and hedges are fast, wider when the mark moves a lot or the hedge was slow. Pause only when something is wrong: a hedge is late or the sponsor is down. Net delta near its limit is no reason to pause: the gateway then quotes only the side that brings it back, and a carried exposure under Strike's minimum order is hedged together with the next fill. Stay inside the mandate; anything outside is refused by the gateway, not by you.
 

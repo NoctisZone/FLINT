@@ -95,3 +95,47 @@ test("a fill whose hedge is placed and still inside its deadline is pending, not
   assert.deepEqual(reconcile({ entries, strikeFills: [], mandate: M, now: T + 40_000 }).violations.map((v) => v.rule), ["unhedged-fill"]);
 });
 
+test("a resting limit, an owner's close and a tool order are the gateway's own orders: their Strike fills are known, not violations", () => {
+  const a = clean();
+  a.entries.push(
+    { seq: 5, kind: "hedge.resting", clientOrderId: "h1-L", side: "buy", sizeBtc: 0.001, price: 83_000 },
+    { seq: 6, kind: "decision", action: { venue: "strike", kind: "order", symbol: "BTC-USD", side: "sell", sizeBtc: 0.002, reduceOnly: true, clientOrderId: "mm-rule-close-1" }, mark: 84_000 },
+    { seq: 7, kind: "decision", action: { venue: "strike", kind: "order", symbol: "BTC-USD", side: "buy", sizeBtc: 0.0005, clientOrderId: "mm-rule-tool-2" }, mark: 84_000 },
+  );
+  a.strikeFills.push(
+    { client_order_id: "h1-L", symbol: "BTC-USD", side: "buy", size: "0.001" },
+    { client_order_id: "mm-rule-close-1", symbol: "BTC-USD", side: "sell", size: "0.002" },
+    { client_order_id: "mm-rule-tool-2", symbol: "BTC-USD", side: "buy", size: "0.0005" },
+  );
+  const r = reconcile(a);
+  assert.deepEqual(r.violations, []);
+  assert.equal(r.counts.hedgesPlaced, 4);
+  a.strikeFills.push({ client_order_id: "mm-rule-tool-2", symbol: "BTC-USD", side: "buy", size: "0.0005" });
+  assert.deepEqual(reconcile(a).violations.map((v) => v.rule), ["over-hedged"], "a tool order filled twice over is still caught");
+});
+
+test("an agent on two markets is walked market by market: each market's delta against the limit, the claim is the largest market's", () => {
+  const two = { ...M, strike: { ...M.strike, markets: ["BTC-USD", "ADA-USD"] }, midnight: { ...M.midnight, pairs: ["tBTC/tUSD", "tADA/tUSD"] } };
+  const T = Date.parse("2026-10-22T07:00:00Z");
+  const entries = [
+    { seq: 1, kind: "decision", ts: "2026-10-22T06:59:00Z", action: { venue: "midnight", kind: "quote", pair: "tBTC/tUSD" }, mark: 80_000 },
+    { seq: 2, kind: "decision", ts: "2026-10-22T06:59:00Z", action: { venue: "midnight", kind: "quote", pair: "tADA/tUSD" }, mark: 0.2 },
+    { seq: 3, kind: "fill", id: "a", pair: "tBTC/tUSD", side: "buy", sizeBtc: 0.001, at: T },
+    { seq: 4, kind: "fill", id: "b", pair: "tADA/tUSD", side: "buy", sizeBtc: 500, at: T + 10 },
+    { seq: 5, kind: "hedge.placed", clientOrderId: "h1", side: "sell", sizeBtc: 0.001, covers: ["a"], ts: "2026-10-22T07:00:00.100Z" },
+    { seq: 6, kind: "hedge.placed", clientOrderId: "h2", side: "sell", sizeBtc: 500, covers: ["b"], ts: "2026-10-22T07:00:00.100Z" },
+    { seq: 7, kind: "hedge.filled", fillId: "a", clientOrderId: "h1", side: "sell", sizeBtc: 0.001, latencyMs: 2000 },
+    { seq: 8, kind: "hedge.filled", fillId: "b", clientOrderId: "h2", side: "sell", sizeBtc: 500, latencyMs: 3000 },
+  ];
+  const strikeFills = [
+    { client_order_id: "h1", symbol: "BTC-USD", side: "sell", size: "0.001", timestamp: T + 2000 },
+    { client_order_id: "h2", symbol: "ADA-USD", side: "sell", size: "500", timestamp: T + 3010 },
+  ];
+  const r = reconcile({ entries, strikeFills, mandate: two, now: T + 60_000 });
+  assert.deepEqual(r.violations, [], "80 USD on BTC and 100 USD on ADA, each under the 150 USD limit; summed they would not be");
+  assert.deepEqual([r.markets["BTC-USD"].maxDeltaUsd, r.markets["ADA-USD"].maxDeltaUsd, r.claims.maxNetDeltaUsd, r.claims.maxFillToHedgeSec], [80, 100, 100, 3]);
+  // the books carried in per market
+  const c = reconcile({ entries, strikeFills, mandate: two, now: T + 60_000, startDeltaBtc: { "ADA-USD": 300 } });
+  assert.deepEqual(c.violations.map((v) => [v.rule, v.symbol]), [["risk.maxNetDeltaUsd", "ADA-USD"]]);
+});
+

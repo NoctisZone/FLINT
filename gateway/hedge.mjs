@@ -31,13 +31,17 @@ const r8 = (x) => Math.round(x * 1e8) / 1e8;
  * @param {() => number} [o.now]            ms
  * @param {object} [o.state]                books from the last run
  * @param {number} [o.stepBtc]              Strike's size step
+ * @param {number} [o.tickSize]             Strike's price tick on this market; 1 USD by default
  * @param {number} [o.minNotionalUsd]       Strike's smallest order
  * @param {(snapshot) => void} [o.onChange]
  * @param {(hedged: {fill, hedge, latencyMs}) => void} [o.onHedged]   a Midnight fill is fully hedged (or netted, or closed as dust)
  * @param {boolean} [o.ownAccount]          false when the Strike key is shared: position events then describe other agents too and are ignored
  * @param {string} [o.prefix]               the start of this hedger's order ids; an agent on several markets gives each hedger its own
  */
-export function hedger({ mandate, symbol, strike, check = defaultCheck, log = () => {}, now = Date.now, state: init = {}, stepBtc = 0.00001, minNotionalUsd = 0, dustUsd = 5, onChange = () => {}, onHedged = () => {}, ownAccount = true, prefix = `${mandate.agentId}-` }) {
+export function hedger({ mandate, symbol, strike, check = defaultCheck, log = () => {}, now = Date.now, state: init = {}, stepBtc = 0.00001, tickSize = 1, minNotionalUsd = 0, dustUsd = 5, onChange = () => {}, onHedged = () => {}, ownAccount = true, prefix = `${mandate.agentId}-` }) {
+  // prices on the market's tick: a resting limit rounded toward the mark, a reported fill price rounded plainly
+  const places = Math.max(0, Math.ceil(-Math.log10(tickSize) - 1e-9));
+  const onTick = (x, dir) => Number(((dir > 0 ? Math.ceil(x / tickSize - 1e-9) : dir < 0 ? Math.floor(x / tickSize + 1e-9) : Math.round(x / tickSize)) * tickSize).toFixed(places));
   const s = {
     mandate, signatureOk: true, frozen: false, frozenReason: null, manual: false,
     mark: 0, strikePositionBtc: 0, leverage: mandate.strike.maxLeverage, midnightInventoryBtc: 0, unhedgedBtc: 0,
@@ -46,7 +50,7 @@ export function hedger({ mandate, symbol, strike, check = defaultCheck, log = ()
   };
   // what is still unhedged, oldest first; a carried book from the last run is one exposure without a fill
   const exposures = [];
-  if (Math.abs(s.unhedgedBtc) >= stepBtc) exposures.push({ fill: { id: `carry-${now()}`, side: s.unhedgedBtc > 0 ? "buy" : "sell", sizeBtc: Math.abs(s.unhedgedBtc), at: now() }, remaining: s.unhedgedBtc, at: now(), parts: [], coveredBy: null });
+  if (Math.abs(s.unhedgedBtc) >= stepBtc) exposures.push({ fill: { id: `carry-${now()}`, carry: true, side: s.unhedgedBtc > 0 ? "buy" : "sell", sizeBtc: Math.abs(s.unhedgedBtc), at: now() }, remaining: s.unhedgedBtc, at: now(), parts: [], coveredBy: null });
   const pending = new Map(); // clientOrderId → { side, sizeBtc, filledBtc, resting, deadline, placedAt, lateLogged }
   const done = [];           // { fill, hedge, latencyMs }
   let seq = 0;
@@ -57,7 +61,7 @@ export function hedger({ mandate, symbol, strike, check = defaultCheck, log = ()
   const mine = (clientOrderId) => typeof clientOrderId === "string" && clientOrderId.startsWith(`${mandate.agentId}-`);
 
   const view = () => ({ ...s, mark: strike.mark(), now: now() });
-  const snapshot = () => ({ midnightInventoryBtc: s.midnightInventoryBtc, strikePositionBtc: s.strikePositionBtc, unhedgedBtc: s.unhedgedBtc, frozen: s.frozen, frozenReason: s.frozenReason });
+  const snapshot = () => ({ midnightInventoryBtc: s.midnightInventoryBtc, strikePositionBtc: s.strikePositionBtc, unhedgedBtc: s.unhedgedBtc, frozen: s.frozen, frozenReason: s.frozenReason, manual: s.manual });
   const changed = () => onChange(snapshot());
   const recount = () => { s.unhedgedBtc = r8(exposures.reduce((a, e) => a + e.remaining, 0)); };
 
@@ -66,7 +70,7 @@ export function hedger({ mandate, symbol, strike, check = defaultCheck, log = ()
     const latencyMs = at - fill.at;
     const largest = parts.reduce((m, p) => (p.sizeBtc > m.sizeBtc ? p : m), parts[0]);
     const priced = parts.filter((p) => p.price !== null);
-    const price = priced.length ? Math.round(priced.reduce((a, p) => a + p.price * p.sizeBtc, 0) / priced.reduce((a, p) => a + p.sizeBtc, 0) * 10) / 10 : null;
+    const price = priced.length ? onTick(priced.reduce((a, p) => a + p.price * p.sizeBtc, 0) / priced.reduce((a, p) => a + p.sizeBtc, 0), 0) : null;
     const clientOrderIds = [...new Set(parts.map((p) => p.clientOrderId).filter(Boolean))];
     const h = { fill, hedge: { how: largest.how, clientOrderIds, clientOrderId: clientOrderIds.at(-1) ?? null, price, sizeBtc: fill.sizeBtc, at, parts }, latencyMs };
     done.push(h);
@@ -178,7 +182,7 @@ export function hedger({ mandate, symbol, strike, check = defaultCheck, log = ()
     const side = need > 0 ? "sell" : "buy";
     // a limit sits at the edge of the price band, rounded toward the mark so the band check passes
     const mark = strike.mark();
-    const price = rest ? (side === "sell" ? Math.ceil(mark * (1 - mandate.strike.priceBandPct / 100)) : Math.floor(mark * (1 + mandate.strike.priceBandPct / 100))) : undefined;
+    const price = rest ? (side === "sell" ? onTick(mark * (1 - mandate.strike.priceBandPct / 100), +1) : onTick(mark * (1 + mandate.strike.priceBandPct / 100), -1)) : undefined;
     const action = { venue: "strike", kind: "order", symbol, side, sizeBtc, price, hedge: true };
     const refused = check(action, view());
     if (refused) {
@@ -279,7 +283,8 @@ export function hedger({ mandate, symbol, strike, check = defaultCheck, log = ()
   }
 
   function freeze(reason, { manual = false } = {}) {
-    if (s.frozen) return;
+    // a hand freeze over an automatic one holds: it no longer lifts by itself
+    if (s.frozen) { if (manual && !s.manual) { s.manual = true; s.frozenReason = reason; log({ kind: "frozen", agent: mandate.agentId, reason, manual: true }); changed(); } return; }
     s.frozen = true;
     s.frozenReason = reason;
     s.manual = manual;
@@ -292,11 +297,16 @@ export function hedger({ mandate, symbol, strike, check = defaultCheck, log = ()
     /** Hedge what the books carry from the last run. */
     rehedge: () => { if (exposures.length) log({ kind: "carry", agent: mandate.agentId, unhedgedBtc: s.unhedgedBtc }); return rebalance(); },
     resume() { s.frozen = false; s.frozenReason = null; s.manual = false; log({ kind: "resumed", agent: mandate.agentId }); changed(); },
+    /** A mandate the owner signed anew: the band, the deadline and the checks follow it from now on. */
+    setMandate(m) { mandate = m; s.mandate = m; },
+    /** Stop means flat: resting limits pulled, one market order for what is unhedged; a dead one rests again by itself. */
+    flatten: () => rebalance(),
     get state() { return view(); },
     get pending() { return [...pending.entries()].map(([id, p]) => ({ clientOrderId: id, side: p.side, sizeBtc: p.sizeBtc, filledBtc: p.filledBtc, resting: p.resting, deadline: p.deadline, placedAt: p.placedAt })); },
     get exposures() { return exposures.map((e) => ({ fillId: e.fill.id, remaining: e.remaining, at: e.at, coveredBy: covered(e) ? e.coveredBy : null })); },
     get hedges() { return done.slice(); },
-    get maxLatencyMs() { return done.reduce((m, h) => Math.max(m, h.latencyMs), 0); },
+    /** The slowest hedge of a fill in this run; a book carried from the last run is not a fill. */
+    get maxLatencyMs() { return done.reduce((m, h) => (h.fill.carry ? m : Math.max(m, h.latencyMs)), 0); },
   };
 }
 

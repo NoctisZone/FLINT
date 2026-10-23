@@ -64,7 +64,7 @@ export function withdrawSteps({ agentId, wallet, owner, strike, chain, usd, keep
       const q = await strike.withdrawQuote({ blockchain: "cardano", mode: "balance", usd_value: String(amount), asset: "ADA" });
       if (!q.withdraw_id || !q.message_to_sign) throw new Error(`Strike's withdraw quote lacks withdraw_id or message_to_sign: ${JSON.stringify(q).slice(0, 200)}`);
       ctx.set("quote", { withdrawId: q.withdraw_id, fee: q.fee ?? null, txCbor: q.tx_cbor ?? null, message: q.message_to_sign, usd: amount });
-      ctx.set("pub", { ...(ctx.data.pub ?? {}), usd: amount, askedUsd: usd, cappedFromUsd: capped, feeUsd: q.fee ?? null, limit: w ? { limitAda: w.limitAda, usedAda: w.usedAda, remainingAda: w.remainingAda, resetsAt: w.resetsAt, adaUsd: room.adaUsd } : null });
+      ctx.set("pub", { ...(ctx.data.pub ?? {}), usd: amount, askedUsd: usd, cappedFromUsd: capped, feeUsd: q.fee ?? null, adaUsd: room.adaUsd, limit: w ? { limitAda: w.limitAda, usedAda: w.usedAda, remainingAda: w.remainingAda, resetsAt: w.resetsAt, adaUsd: room.adaUsd } : null });
       ctx.set("before", String(await chain.balance(wallet.address)));
       const fee = `Strike fee ${q.fee ?? "?"} USD`;
       if (capped === null) return `${amount} USD quoted, ${fee}`;
@@ -102,11 +102,16 @@ export function withdrawSteps({ agentId, wallet, owner, strike, chain, usd, keep
         await sleep(30_000);
       }
     },
-    /** Everything above what the wallet keeps for fees goes to the owner. */
+    /** What Strike paid goes to the owner: the rise the settle step saw, never more than the quote at its rate, never what the wallet keeps for fees. */
     async forward(ctx) {
       const utxos = await chain.utxos(wallet.address);
       const have = utxos.reduce((s, u) => s + BigInt(u.value), 0n);
-      const lovelace = have - keepLovelace - 200_000n;
+      const room = have - keepLovelace - 200_000n;
+      const landed = BigInt(ctx.data.landed ?? 0);
+      const adaUsd = ctx.data.pub?.adaUsd ?? 0;
+      // Strike pays at its own rate at payout time: five percent over the quote's rate is still the payout, more is money from elsewhere
+      const quoted = adaUsd > 0 ? BigInt(Math.round(Number(ctx.data.quote?.usd ?? 0) / adaUsd * 1.05 * 1e6)) : landed;
+      const lovelace = [room, landed > 0n ? landed : room, quoted > 0n ? quoted : room].reduce((a, b) => (a < b ? a : b));
       if (lovelace <= 1_000_000n) throw new Error(`only ${(Number(have) / 1e6).toFixed(2)} tADA on the wallet, nothing to forward`);
       const signed = buildTransfer({ wallet, utxos, to: owner, lovelace });
       const txHash = await chain.submit(signed.cborHex);

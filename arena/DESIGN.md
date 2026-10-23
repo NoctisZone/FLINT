@@ -59,13 +59,15 @@ Two families, both variable, both in `fonts/` and embedded in `flint.html`:
 
 | Role | Setting |
 |---|---|
-| Body | Geist 400, 15px/1.55 |
+| Body | Geist 400, `--fs-body` (16px desktop, 14.5px phone)/1.55 |
 | Hero headline | Geist 300, `clamp(38px, 5vw, 66px)`/1.02, letter-spacing −0.045em; the emphasis in Geist 500, pink |
 | Section headline (Console) | Geist 300, `clamp(32px, 4.4vw, 54px)`, −0.045em |
 | Big numbers (scoreboard, terminal) | Geist 300, 46px (scoreboard) / 30px (terminal bar), −0.05em, `font-variant-numeric: tabular-nums` |
-| Card title | Geist 500, 15px, −0.01em |
-| Labels and eyebrows | Geist Mono 500, 10.5–11px, uppercase, letter-spacing 0.12–0.16em, `--t4` |
-| Values in tables | Geist Mono 400, 12.5px, tabular figures |
+| Card title | Geist 500, `--fs-title` (18px desktop, 16px phone), −0.01em |
+| Labels and eyebrows | Geist Mono 500, `--fs-lbl` (12.5px desktop, 11px phone), uppercase, letter-spacing 0.12em, `--t4` |
+| Values in tables | Geist Mono 400, `--fs-sm` (14px desktop, 12.5px phone), tabular figures |
+
+The five size tokens (`--fs-lbl`, `--fs-sm`, `--fs-body`, `--fs-title`, `--fs-lead`) hold the phone sizes on `:root` and the desktop sizes in the `min-width:761px` query. Nothing on desktop is under 12.5px. Change a token, never a rule.
 
 Thin numbers are the signature: big values are Geist 300, never bold. Every number that changes uses tabular figures, so it doesn't jitter.
 
@@ -75,7 +77,7 @@ Thin numbers are the signature: big values are Geist 300, never bold. Every numb
 - **Ground:** a measured grid behind everything: 48px lines at 5% ink, faded out from the top with a radial mask.
 - **Top bar:** sticky, frosted glass (`--glass` plus `backdrop-filter: blur(14px) saturate(140%)`).
   - Left: FLINT, then "by", the ODATANO logo, "&" and the Noctis Agentic lockup.
-  - Right: the view switch, the Simple/Pro switch, the theme, motion and the tour.
+  - Right: the view switch (Arena, Your agents), the theme and the tour.
 - **Strip:** under the top bar, a strip says it's a prototype with made-up numbers.
 - **Rhythm:** 20px between cards; card headers 14px × 18px; card bodies 14px 18px 18px.
 - **Breakpoints:**
@@ -91,11 +93,11 @@ Thin numbers are the signature: big values are Geist 300, never bold. Every numb
 ## 4. Components
 
 - **Card:**
-  - 3px radius, a 1px `--line` border and the `--shadow` token;
+  - 3px radius (`--r`; tiles, inputs and sheets use `--r-md`, 6px; pills `--r-ctl`), a 1px `--line` border and the `--shadow` token;
   - HUD corner marks: 9px ink ticks at top-left and bottom-right, at 55% opacity, drawn by `.card::after`.
 - **Card header (`.ch`):**
   - left: a 26px ring icon in the panel's signal colour, then the title;
-  - right: a mono uppercase note and a round **?** button that opens the panel's help.
+  - right: a mono uppercase note and a round **?** button that opens the panel's help (the scoreboard tiles have none).
 - **Scoreboard tile (`.kpi`):**
   - a 2px accent bar at the top in its signal colour;
   - when the value changes, the bar sweeps across and the number flashes its colour (`bump`).
@@ -115,6 +117,8 @@ Thin numbers are the signature: big values are Geist 300, never bold. Every numb
   - confirmations (wallet, stop agent) open in a centred modal;
   - toasts appear at the bottom.
 - **Avatars:** each agent's face is a sigil drawn from its name (`avatar(seed)`), the same every time. A new agent gets its face from the name you type.
+- **Rings:** the only dashed ring is the gateway's inner hexagon; the owner's own agent carries a solid pink ring. Nothing else is decorated.
+- **Graph coins:** the three markets behind Strike use the original Bitcoin, Solana and Cardano marks as masks (`.lgm-btc`, `.lgm-sol`, `.lgm-ada`); the market shown in the book is `lit` (full opacity, coloured border), the others sit at 55%.
 
 ## 5. Motion
 
@@ -129,17 +133,17 @@ Thin numbers are the signature: big values are Geist 300, never bold. Every numb
   - the charts;
   - the dial needles (on springs);
   - the offer timers.
-- **The Motion switch** adds `.still` to `<html>`, which stops every CSS animation. Canvases then redraw once a second. Motion starts off when the system asks for reduced motion. The choice is saved under `noctis-agentic-view`.
+- **Reduced motion:** when the system asks for it, `.still` goes on `<html>`, which stops every CSS animation; canvases then redraw once a second. There is no switch of its own.
 
 ## 6. Words
 
 - Plain sentences, in present tense.
 - The page explains instead of naming things: "rules its owner signed" rather than "mandate"; "proof on Midnight" rather than "attestation".
-- **Pro** mode swaps in the exact terms: mandate field paths (`risk.hedgeWithinSec`), bps, tool names, client order ids and hashes.
+- The exact terms stay reachable where someone checks a proof: the attester id on an agent's card, the fingerprints in its Proofs tab, the rules' JSON under the order step.
 - Every panel has a **?** with three parts: what it is, how to read it, and why it matters.
 - Five words have their own glossary windows: hedge, rules, proof, sponsor and netting.
 - Buttons say what happens: "Sign 2 changes with your wallet", "Stop MM Rule".
-- Demo actions say "(demo)", because nothing on the page acts for real until the owner API exists.
+- In the simulation, actions say "(demo)"; live, every action that moves money or keys asks once, with the facts in a short list.
 
 ## 7. Logos
 

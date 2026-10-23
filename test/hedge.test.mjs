@@ -299,3 +299,74 @@ test("a carried exposure under Strike's minimum lifts a freeze: nothing can be o
   assert.deepEqual([orders[0].side, orders[0].size], ["sell", 0.0015], "the carry is hedged together with the new fill");
 });
 
+
+test("on ADA-USD a resting limit sits on the market's tick inside the band, not on a whole dollar", async () => {
+  const orders = [];
+  const m = { ...M, agentId: "t-ada1", strike: { ...M.strike, markets: ["ADA-USD"], priceBandPct: 2 } };
+  const h = hedger({ mandate: m, symbol: "ADA-USD", tickSize: 0.0001, stepBtc: 1, minNotionalUsd: 5, strike: { mark: () => 0.2125, placeOrder: async (o) => { orders.push(o); return { status: "pending" }; }, cancel: async () => ({}) }, now: () => T0, state: { equityStartUsd: 1000, equityNowUsd: 1000 } });
+  const r = await h.onFill({ id: "f-ada", pair: "tADA/tUSD", side: "sell", sizeBtc: 566, price: 0.2125, at: T0 });
+  await h.onStrikeEvent({ kind: "order", symbol: "ADA-USD", clientOrderId: r.clientOrderId, status: "CANCELED", terminal: true, closeReason: "market_order_exceeded_slippage", at: T0 + 200 });
+  assert.equal(h.state.frozen, false, `a resting limit on the tick passes the band check: ${h.state.frozenReason}`);
+  assert.deepEqual([orders[1].type, orders[1].side, orders[1].size, orders[1].price], ["limit", "buy", 566, 0.2167]);
+});
+
+test("a hand freeze is kept in the snapshot and survives a new hedger over it: rehedge does not lift it, a mandate signed anew does", async () => {
+  const { h, log } = setup({ state: { unhedgedBtc: 0 } });
+  h.freeze("stopped by the owner", { manual: true });
+  assert.deepEqual([h.snapshot().frozen, h.snapshot().manual], [true, true]);
+  const again = setup({ state: h.snapshot() });
+  await again.h.rehedge();
+  assert.deepEqual([again.h.state.frozen, again.h.state.manual, again.h.state.frozenReason], [true, true, "stopped by the owner"], "the freeze stands after a restart");
+  again.h.resume();
+  assert.equal(again.h.state.frozen, false);
+  assert.ok(!kinds(log).includes("resumed"));
+});
+
+test("a hand freeze over an automatic one holds: settle no longer lifts it", async () => {
+  const { h, clock } = setup();
+  const r = await h.onFill(fill());
+  clock(T0 + 40_000);
+  h.tick();
+  assert.deepEqual([h.state.frozen, h.state.manual], [true, false], "late: frozen by the watchdog");
+  h.freeze("paused by the owner", { manual: true });
+  assert.deepEqual([h.state.frozen, h.state.manual, h.state.frozenReason], [true, true, "paused by the owner"]);
+  await h.onStrikeEvent({ kind: "fill", symbol: "BTC-USD", clientOrderId: r.clientOrderId, side: "BUY", size: "0.001", price: "80010", at: T0 + 41_000 });
+  assert.deepEqual([h.pending.length, h.state.frozen], [0, true], "hedged, still paused by hand");
+});
+
+test("a mandate signed anew reaches the hedger: the band prices the next resting limit, the deadline times the next hedge", async () => {
+  const { h, orders, clock } = setup();
+  h.setMandate({ ...M, strike: { ...M.strike, priceBandPct: 1 }, risk: { ...M.risk, hedgeWithinSec: 10 } });
+  const r = await h.onFill(fill());
+  assert.equal(h.pending[0].deadline, T0 + 10_000, "the new deadline");
+  await h.onStrikeEvent({ kind: "order", symbol: "BTC-USD", clientOrderId: r.clientOrderId, status: "CANCELED", terminal: true, closeReason: "market_order_exceeded_slippage", at: T0 + 200 });
+  assert.deepEqual([orders[1].type, orders[1].price], ["limit", 80_800], "one percent over the mark, not two");
+  clock(T0 + 11_000);
+  h.tick();
+  assert.match(h.state.frozenReason, /within 10s/);
+});
+
+test("the slowest hedge counts fills of this run only: a book carried from the last run is hedged without a latency of its own", async () => {
+  const { h, orders, clock } = setup({ state: { midnightInventoryBtc: 0.002, strikePositionBtc: 0, unhedgedBtc: 0.002 } });
+  await h.rehedge();
+  assert.equal(orders.length, 1);
+  clock(T0 + 7_200_000);
+  await h.onStrikeEvent({ kind: "fill", symbol: "BTC-USD", clientOrderId: orders[0].clientOrderId, side: "SELL", size: "0.002", price: "80010", at: T0 + 7_200_000 });
+  assert.deepEqual([h.hedges.length, h.hedges[0].latencyMs > 7_000_000, h.maxLatencyMs], [1, true, 0]);
+  const r = await h.onFill(fill({ at: T0 + 7_200_000 }));
+  await h.onStrikeEvent({ kind: "fill", symbol: "BTC-USD", clientOrderId: r.clientOrderId, side: "BUY", size: "0.001", price: "80010", at: T0 + 7_204_000 });
+  assert.equal(h.maxLatencyMs, 4_000);
+});
+
+test("stop means flat: flatten pulls a resting limit and sends what is unhedged as a market order; a thin book leaves a limit resting again", async () => {
+  const { h, orders, cancels, clock } = setup();
+  const r = await h.onFill(fill());
+  await h.onStrikeEvent({ kind: "order", symbol: "BTC-USD", clientOrderId: r.clientOrderId, status: "CANCELED", terminal: true, closeReason: "market_order_exceeded_slippage", at: T0 + 200 });
+  assert.deepEqual([orders.length, orders[1].type, h.pending[0].resting], [2, "limit", true]);
+  h.freeze("stopped by the owner", { manual: true });
+  clock(T0 + 1_000);
+  const f = await h.flatten();
+  assert.deepEqual([f.placed, cancels.length, orders[2].type, orders[2].side, orders[2].size], [true, 1, "market", "buy", 0.001], "the limit pulled, the remainder sent at once");
+  await h.onStrikeEvent({ kind: "order", symbol: "BTC-USD", clientOrderId: f.clientOrderId, status: "CANCELED", terminal: true, closeReason: "market_order_exceeded_slippage", at: T0 + 1_200 });
+  assert.deepEqual([orders[3].type, h.pending.filter((p) => p.resting).length, h.state.frozen, h.state.manual], ["limit", 1, true, true], "Strike could not fill it: a limit rests, the agent stays stopped");
+});

@@ -17,10 +17,10 @@ import { MARKETS, marketOfPair } from "./markets.mjs";
 
 /**
  * @param {object} o
- * @param {Array<{ agentId, mandate, signatureOk, venue, strike?, stream?, sharedStrike?, wallets?, mind: "maker"|"citizen"|"rogue", side?: "buy"|"sell" }>} o.agents
+ * @param {Array<{ agentId, mandate, signatureOk, venue, strike?, stream?, sharedStrike?, wallets?, mind: "maker"|"citizen"|"rogue", side?: "buy"|"sell", stopped?, stoppedReason? }>} o.agents
  *   venue: a midnightVenue; strike: a strikeClient; stream: a userStream factory (onEvent, onStatus) => ({ close });
  *   sharedStrike: the Strike key serves other agents too, so account-wide events are not this agent's;
- *   wallets: { cardano, midnight } for the agent's card
+ *   wallets: { cardano, midnight } for the agent's card; stoppedReason: why it waits ("deposit needed"), for the card
  * @param {() => Promise<number>} o.mark      Strike mark price
  * @param {object} o.feed                     feedState
  * @param {(entry) => object} o.log           decisionLog.append
@@ -51,7 +51,7 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
   // the day's figures for the card and the loss stop, kept in the books so a restart does not reset them
   const freshDay = (equityStartUsd = null) => ({ date: today(), equityStartUsd, spreadCapturedUsd: 0, hedgeCostUsd: 0, strikeVolumeUsd: 0, builderFeesUsd: 0, fills: 0, strikeFills: 0 });
   // the first leg's books stay flat for older readers; every leg's are under `legs`
-  const persist = (a) => { const b = books.get(a.agentId); if (b) saveBooks(a.agentId, { ...(b.h?.snapshot() ?? {}), legs: Object.fromEntries(legsOf(b).map((l) => [l.symbol, l.h?.snapshot() ?? {}])), day: b.day }); };
+  const persist = (a) => { const b = books.get(a.agentId); if (b) saveBooks(a.agentId, { ...(b.h?.snapshot() ?? {}), legs: Object.fromEntries(legsOf(b).map((l) => [l.symbol, l.h?.snapshot() ?? {}])), day: b.day, stopped: Boolean(a.stopped), unwinding: Boolean(a.unwinding) }); };
 
   const entry = (a, e) => log({ agent: a.agentId, ...e });
 
@@ -59,16 +59,20 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
   function addAgent(a) {
     if (books.has(a.agentId)) throw new Error(`agent ${a.agentId} is already in the loop`);
     if (!agents.includes(a)) agents.push(a);
-    const { day: savedDay, legs: savedLegs, ...savedFlat } = saved[a.agentId] ?? {};
+    const { day: savedDay, legs: savedLegs, stopped: savedStopped = false, unwinding: savedUnwinding = false, ...savedFlat } = saved[a.agentId] ?? {};
+    // an owner's stop or unwind outlives a restart
+    if (savedStopped) a.stopped = true;
+    if (savedUnwinding) { a.stopped = true; a.unwinding = true; }
     // a maker or rogue has one leg per market of its mandate; a citizen has none
     const legs = new Map();
     if (a.mind !== "citizen") for (const [i, symbol] of symbolsOf(a).entries()) {
       const state = savedLegs?.[symbol] ?? (i === 0 ? savedFlat : {});
-      const h = a.strike ? hedger({
+      // the rogue's Strike client serves its refused attempts only: a hedger would hedge a shared account's position as its own
+      const h = a.strike && a.mind !== "rogue" ? hedger({
         mandate: a.mandate, symbol, prefix: i === 0 ? `${a.agentId}-` : `${a.agentId}-${(MARKETS[symbol]?.base ?? symbol).toLowerCase()}-`,
         strike: { mark: () => markAt(symbol) ?? 0, placeOrder: (o) => a.strike.placeOrder(o.type === "limit" ? o : { ...o, type: "market", slippage: a.mandate.strike.priceBandPct / 100 }), cancel: (o) => a.strike.cancel(o) },
         log: (e) => entry(a, e), now,
-        state, onChange: () => persist(a), minNotionalUsd: minAt(a, symbol), stepBtc: a.rules?.[symbol]?.step ?? a.step ?? 0.00001,
+        state, onChange: () => persist(a), minNotionalUsd: minAt(a, symbol), stepBtc: a.rules?.[symbol]?.step ?? a.step ?? 0.00001, tickSize: a.rules?.[symbol]?.tick ?? a.tick ?? 1,
         onHedged: (x) => feed.fillHedged(x.fill.id, hedgeCard(x)), ownAccount: a.sharedStrike !== true,
       }) : null;
       legs.set(symbol, { symbol, pair: pairOfSymbol(symbol), h, rules: a.rules?.[symbol] ?? { step: a.step, tick: a.tick, minNotionalUsd: a.minQuoteUsd } });
@@ -92,7 +96,22 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
   }
 
   const ownOrder = (a, clientOrderId) => typeof clientOrderId === "string" && clientOrderId.startsWith(`${a.agentId}-`);
-  const fillCard = (a, e) => ({ ts: new Date(now()).toISOString(), agentId: a.agentId, strikeFill: { side: e.side, size: e.size, price: e.price, clientOrderId: e.clientOrderId } });
+  /** Orders an outside mind placed through the tools, cancelled one by one; the hedgers' own orders stay. */
+  async function cancelToolOrders(a) {
+    if (!a.strike?.openOrders) return 0;
+    let n = 0;
+    for (const symbol of symbolsOf(a)) {
+      const open = (await a.strike.openOrders(symbol)).orders ?? [];
+      for (const o of open) {
+        const id = o.ClientOrderID ?? o.clientOrderId ?? "";
+        if (!id.startsWith(`${a.agentId}-tool-`)) continue;
+        await a.strike.cancel({ symbol, clientOrderId: id }).catch((err) => entry(a, { kind: "cancel.failed", clientOrderId: id, error: err.message.slice(0, 120) }));
+        n++;
+      }
+    }
+    return n;
+  }
+  const fillCard = (a, e) => ({ ts: new Date(now()).toISOString(), agentId: a.agentId, strikeFill: { symbol: e.symbol ?? symbolOf(a), side: e.side, size: e.size, price: e.price, clientOrderId: e.clientOrderId } });
   const hedgeCard = (x) => ({ how: x.hedge.how, clientOrderIds: x.hedge.clientOrderIds, price: x.hedge.price, latencySec: Math.round(x.latencyMs / 100) / 10, at: new Date(x.hedge.at).toISOString() });
 
   /** A Strike fill of this agent: volume, fees and slippage against the mark go to the day's figures. */
@@ -151,16 +170,18 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
   async function act(a, b, action, reason, run) {
     const leg = (action.symbol && legOfSymbol(b, action.symbol)) || (action.pair && legOfPair(b, action.pair)) || legsOf(b)[0] || null;
     const s = await stateOf(a, b, leg, action.pair ?? leg?.pair ?? a.venue.pair);
-    const refused = check(action, s);
+    // a stopped agent acts no more, whoever asks (its own mind, its tools); an owner's reduce-only close and an unwind still pass
+    const refused = a.stopped && !a.unwinding && !action.reduceOnly ? { rule: "stopped", limit: "a mandate signed anew", attempted: action.kind, message: "stopped by the owner; nothing passes until the mandate is signed again" } : check(action, s);
     const ts = new Date(now()).toISOString();
+    const where = { pair: action.pair ?? leg?.pair ?? null, symbol: action.symbol ?? leg?.symbol ?? marketOfPair(action.pair)?.symbol ?? null };
     if (refused) {
       entry(a, { kind: "refusal", action, ...refused, reason });
-      feed.refusal({ ts, agentId: a.agentId, venue: action.venue, rule: refused.rule, limit: refused.limit, attempted: refused.attempted, action: action.kind });
+      feed.refusal({ ts, agentId: a.agentId, venue: action.venue, rule: refused.rule, limit: refused.limit, attempted: refused.attempted, action: action.kind, ...where });
       return { refused };
     }
     b.actions.push(now());
     entry(a, { kind: "decision", action, reason, mark: s.mark });
-    feed.decision({ ts, agentId: a.agentId, action: `${action.venue}.${action.kind}`, side: action.side, sizeBtc: action.sizeBtc, price: action.price ?? null, ...(action.quoteId ? { quoteId: action.quoteId } : {}), reason });
+    feed.decision({ ts, agentId: a.agentId, action: `${action.venue}.${action.kind}`, side: action.side, sizeBtc: action.sizeBtc, price: action.price ?? null, ...(action.quoteId ? { quoteId: action.quoteId } : {}), ...where, reason });
     try {
       const result = await run();
       return { result };
@@ -244,7 +265,7 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
       counts.push(`${pair} ${board.length}`);
       if (!mark || !board.length) continue;
       const holdings = pair === a.venue.pair ? s.holdings : await a.venue.holdings(pair);
-      d = citizenDecision({ agentId: a.agentId, mark, board, holdings, frozen: s.frozen, now: now() }, { side: a.side ?? "buy", maxUsd: a.mandate.midnight.maxQuoteUsd, rnd, ...a.options });
+      d = citizenDecision({ agentId: a.agentId, mark, board, holdings, frozen: s.frozen, now: now(), base: marketOfPair(pair)?.base ?? "BTC" }, { side: a.side ?? "buy", maxUsd: a.mandate.midnight.maxQuoteUsd, rnd, ...a.options });
       if (d.take) break;
     }
     entry(a, { kind: "look", reason: d.reason, board: counts.join(", ") });
@@ -258,9 +279,9 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
     const fills = await a.venue.pollFills();
     for (const f of fills) {
       feed.quoteGone(f.id);
-      feed.fill({ ts: new Date(f.at).toISOString(), agentId: a.agentId, quoteId: f.id, txHash: f.txHash, midnight: { side: f.side, sizeBtc: f.sizeBtc, price: f.price } });
-      // what the fill earned against its market's mark: a sell above it, a buy below it
       const leg = legOfPair(b, f.pair ?? a.venue.pair) ?? legsOf(b)[0] ?? null;
+      feed.fill({ ts: new Date(f.at).toISOString(), agentId: a.agentId, quoteId: f.id, txHash: f.txHash, midnight: { side: f.side, sizeBtc: f.sizeBtc, price: f.price, pair: f.pair ?? leg?.pair ?? a.venue.pair } });
+      // what the fill earned against its market's mark: a sell above it, a buy below it
       const mk = leg ? markAt(leg.symbol) : markOf(a);
       if (mk) b.day.spreadCapturedUsd = round2(b.day.spreadCapturedUsd + (f.side === "sell" ? f.price - mk : mk - f.price) * f.sizeBtc);
       b.day.fills += 1;
@@ -297,32 +318,34 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
     const s = await stateOf(a, b);
     const h = b.h?.state;
     const legs = legsOf(b);
-    const markOfPair = (pair) => markAt(marketOfPair(pair)?.symbol) ?? markOf(a) ?? 0;
+    const markOfPair = (pair) => markAt(marketOfPair(pair)?.symbol) ?? null;
     // coins locked in open quotes leave the wallet's balance until the quote fills or goes; they are still the agent's
     const allOpen = a.venue.openQuotes;
-    const reservedUsd = round2(allOpen.reduce((sum, q) => sum + (q.side === "ask" ? q.sizeBtc * markOfPair(q.pair ?? a.venue.pair) : q.sizeBtc * q.price), 0));
-    // every base asset the wallet holds, each at its market's mark
-    const baseUsd = Object.entries(s.holdings.bases ?? { [a.venue.pair]: { btc: s.holdings.btc } }).reduce((sum, [pair, x]) => sum + x.btc * markOfPair(pair), 0);
-    const equityUsd = round2(baseUsd + s.holdings.usd + reservedUsd + (await strikeEquity(a, b)));
+    const reservedUsd = round2(allOpen.reduce((sum, q) => sum + q.sizeBtc * (q.side === "ask" ? (markOfPair(q.pair ?? a.venue.pair) ?? q.price) : q.price), 0));
+    // every base asset the wallet holds, each at its market's mark; a market without a mark this round leaves the equity as it was
+    const bases = Object.entries(s.holdings.bases ?? { [a.venue.pair]: { btc: s.holdings.btc } });
+    const marked = bases.every(([pair]) => markOfPair(pair));
+    const equityUsd = marked ? round2(bases.reduce((sum, [pair, x]) => sum + x.btc * markOfPair(pair), 0) + s.holdings.usd + reservedUsd + (await strikeEquity(a, b))) : (b.equityWindow?.at(-1) ?? b.day.equityStartUsd ?? 0);
     const legUsd = (l, f) => f(l.h?.state ?? {}) * (markAt(l.symbol) ?? 0);
     const netDeltaUsd = round2(legs.reduce((sum, l) => sum + legUsd(l, (x) => (x.midnightInventoryBtc ?? 0) + (x.strikePositionBtc ?? 0)), 0));
     const unhedgedUsd = round2(legs.reduce((sum, l) => sum + legUsd(l, (x) => x.unhedgedBtc ?? 0), 0));
     const pending = legs.reduce((n, l) => n + (l.h?.pending.length ?? 0), 0);
+    const resting = legs.reduce((n, l) => n + (l.h?.pending.filter((p) => p.resting).length ?? 0), 0);
     const frozenLeg = legs.find((l) => l.h?.state.frozen) ?? null;
-    if (b.day.date !== today()) b.day = freshDay(equityUsd);
-    if (b.day.equityStartUsd === null) b.day.equityStartUsd = equityUsd;
+    if (b.day.date !== today()) b.day = freshDay(marked ? equityUsd : null);
+    if (b.day.equityStartUsd === null && marked) b.day.equityStartUsd = equityUsd;
     // a swap in flight leaves the wallet for up to a minute: the loss stop sees the best of the last five readings
-    b.equityWindow = [...(b.equityWindow ?? []), equityUsd].slice(-5);
-    b.equityNow = Math.max(...b.equityWindow);
+    if (marked) { b.equityWindow = [...(b.equityWindow ?? []), equityUsd].slice(-5); b.equityNow = Math.max(...b.equityWindow); }
     persist(a);
     feed.agent(a.agentId, {
       status: a.unwinding ? "unwinding" : a.stopped ? "stopped" : frozenLeg ? (frozenLeg.h.state.manual ? "paused" : "frozen") : pending ? "hedging" : a.mind === "citizen" ? "watching" : a.mind === "rogue" ? "probing" : "quoting",
+      stoppedReason: a.stopped ? a.stoppedReason ?? null : null,
       midnight: { btc: s.holdings.btc, usd: s.holdings.usd, reservedUsd, openQuotes: allOpen.length, bases: Object.fromEntries(Object.entries(s.holdings.bases ?? {}).map(([pair, x]) => [pair, x.btc])) },
       strikePositionBtc: h?.strikePositionBtc ?? 0, netDeltaUsd, unhedgedUsd,
       hedges: legs.reduce((n, l) => n + (l.h?.hedges.length ?? 0), 0), maxHedgeLatencySec: legs.some((l) => l.h) ? Math.round(Math.max(...legs.map((l) => l.h?.maxLatencyMs ?? 0)) / 100) / 10 : null,
-      pending,
+      pending, resting,
       // one entry per market the agent trades
-      legs: Object.fromEntries(legs.map((l) => { const x = l.h?.state ?? {}; const mk = markAt(l.symbol) ?? 0; return [l.symbol, { pair: l.pair, mark: mk, inventoryBtc: x.midnightInventoryBtc ?? 0, strikePositionBtc: x.strikePositionBtc ?? 0, netDeltaUsd: round2(((x.midnightInventoryBtc ?? 0) + (x.strikePositionBtc ?? 0)) * mk), unhedgedUsd: round2((x.unhedgedBtc ?? 0) * mk), openQuotes: allOpen.filter((q) => (q.pair ?? a.venue.pair) === l.pair).length, pending: l.h?.pending.length ?? 0, frozen: x.frozen ?? false }]; })),
+      legs: Object.fromEntries(legs.map((l) => { const x = l.h?.state ?? {}; const mk = markAt(l.symbol) ?? 0; return [l.symbol, { pair: l.pair, mark: mk, inventoryBtc: x.midnightInventoryBtc ?? 0, strikePositionBtc: x.strikePositionBtc ?? 0, netDeltaUsd: round2(((x.midnightInventoryBtc ?? 0) + (x.strikePositionBtc ?? 0)) * mk), unhedgedUsd: round2((x.unhedgedBtc ?? 0) * mk), openQuotes: allOpen.filter((q) => (q.pair ?? a.venue.pair) === l.pair).length, pending: l.h?.pending.length ?? 0, resting: l.h?.pending.filter((p) => p.resting).length ?? 0, frozen: x.frozen ?? false }]; })),
       equityUsd, strikeEquityUsd: b.strikeEquity ?? null, equityStartUsd: b.day.equityStartUsd, pnlPct: b.day.equityStartUsd > 0 ? round2((equityUsd - b.day.equityStartUsd) / b.day.equityStartUsd * 100) : 0,
       spreadCapturedUsd: b.day.spreadCapturedUsd, hedgeCostUsd: b.day.hedgeCostUsd, strikeVolumeUsd: b.day.strikeVolumeUsd, builderFeesUsd: b.day.builderFeesUsd,
       day: b.day.date,
@@ -332,6 +355,8 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
   async function round() {
     marks = marksOf(await mark());
     feed.setMarks(marks);
+    // the board lets a quote lapse at its expiry; the feed follows
+    for (const q of feed.get("quotes").quotes) if (q.expiresAt && Date.parse(q.expiresAt) <= now()) feed.quoteGone(q.quoteId);
     for (const a of agents) {
       const b = books.get(a.agentId);
       try {
@@ -419,14 +444,16 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
         async takeQuote(quoteId, why) {
           const q = (await a.venue.board({ all: true })).find((x) => x.quoteId === quoteId);
           if (!q) return { error: `no open quote ${quoteId}` };
-          const r = await act(a, b, { venue: "midnight", kind: "take", pair: q.pair ?? a.venue.pair, side: q.side === "ask" ? "buy" : "sell", sizeBtc: q.sizeBtc, price: q.price }, why, () => a.venue.take(q));
+          const r = await act(a, b, { venue: "midnight", kind: "take", pair: q.pair ?? a.venue.pair, side: q.side === "ask" ? "buy" : "sell", sizeBtc: q.sizeBtc, price: q.price, quoteId }, why, () => a.venue.take(q));
           if (r.result?.landed) feed.quoteGone(quoteId);
           return r.refused ? { refused: r.refused } : r.error ? { error: r.error } : r.result;
         },
         async placeOrder(o, why) {
           if (!a.strike) return { error: "this agent has no Strike account" };
           const symbol = this.legFor(o)?.symbol ?? m.strike.markets[0];
-          const r = await act(a, b, { venue: "strike", kind: "order", symbol, side: o.side, sizeBtc: o.sizeBtc, price: o.price }, why, () => a.strike.placeOrder({ symbol, side: o.side, size: o.sizeBtc, ...(o.price ? { type: "limit", price: o.price } : { type: "market", slippage: m.strike.priceBandPct / 100 }), clientOrderId: `${agentId}-tool-${Date.now()}` }));
+          // the order's id is in the logged decision, so the reconciler knows the fill it brings
+          const clientOrderId = `${agentId}-tool-${now()}`;
+          const r = await act(a, b, { venue: "strike", kind: "order", symbol, side: o.side, sizeBtc: o.sizeBtc, price: o.price, clientOrderId }, why, () => a.strike.placeOrder({ symbol, side: o.side, size: o.sizeBtc, ...(o.price ? { type: "limit", price: o.price } : { type: "market", slippage: m.strike.priceBandPct / 100 }), clientOrderId }));
           return r.refused ? { refused: r.refused } : r.error ? { error: r.error } : r.result;
         },
         async hedge() {
@@ -455,7 +482,8 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
             const s = await stateOf(a, b, leg);
             if (Math.abs(s.strikePositionBtc) < 1e-9) continue;
             const side = s.strikePositionBtc > 0 ? "sell" : "buy";
-            const r = await act(a, b, { venue: "strike", kind: "order", symbol: leg.symbol, side, sizeBtc: Math.abs(s.strikePositionBtc), reduceOnly: true }, why, () => a.strike.placeOrder({ symbol: leg.symbol, side, type: "market", size: Math.abs(s.strikePositionBtc), reduceOnly: true, slippage: m.strike.priceBandPct / 100, clientOrderId: `${agentId}-close-${Date.now()}` }));
+            const clientOrderId = `${agentId}-close-${now()}`;
+            const r = await act(a, b, { venue: "strike", kind: "order", symbol: leg.symbol, side, sizeBtc: Math.abs(s.strikePositionBtc), reduceOnly: true, clientOrderId }, why, () => a.strike.placeOrder({ symbol: leg.symbol, side, type: "market", size: Math.abs(s.strikePositionBtc), reduceOnly: true, slippage: m.strike.priceBandPct / 100, clientOrderId }));
             last = r.refused ? { refused: r.refused } : r.error ? { error: r.error } : r.result;
             if (r.refused || r.error) return last;
           }
@@ -465,17 +493,49 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
     },
     freeze: (agentId, reason, opts) => { for (const l of legsOf(books.get(agentId))) l.h?.freeze(reason, opts); },
     resume: (agentId) => { for (const l of legsOf(books.get(agentId))) l.h?.resume(); },
-    /** The owner stops an agent: frozen by hand, quotes and Strike orders pulled, nothing new until a mandate is signed again. */
+    /**
+     * The owner stops an agent: frozen by hand, its quotes and tool orders pulled, nothing new until a mandate is
+     * signed again. Stop means flat: what is still unhedged goes to Strike at once as a market order (a resting limit
+     * is replaced by it); when Strike cannot fill it, a limit rests again and the card says so.
+     */
     async stopAgent(agentId, reason = "stopped by the owner") {
       const a = agents.find((x) => x.agentId === agentId);
       if (!a) return null;
+      const b = books.get(agentId);
       a.stopped = true;
       a.unwinding = false;
-      for (const l of legsOf(books.get(agentId))) l.h?.freeze(reason, { manual: true });
-      const r = await this_.portFor(agentId).cancelAll();
+      for (const l of legsOf(b)) l.h?.freeze(reason, { manual: true });
+      const quotes = a.venue.openQuotes.map((q) => q.quoteId);
+      await a.venue.retireAll();
+      for (const id of quotes) feed.quoteGone(id);
+      const hedges = {};
+      for (const l of legsOf(b)) if (l.h) { const x = await l.h.flatten(); hedges[l.symbol] = x.placed ? `market order ${x.clientOrderId}` : x.refused ? `refused: ${x.refused.rule}` : x.error ? `failed: ${x.error}` : x.small ? "a remainder under Strike's minimum" : "flat"; }
+      const strike = await cancelToolOrders(a);
+      const r = { quotes: quotes.length, strike, hedges };
       entry(a, { kind: "stopped", reason, ...r });
-      await card(a, books.get(agentId));
+      await card(a, b);
       return r;
+    },
+    /** A payout or a deposit moves the agent's equity without a trade: the day's baseline for the loss stop moves with it. */
+    adjustEquityStart(agentId, deltaUsd, why) {
+      const a = agents.find((x) => x.agentId === agentId);
+      const b = books.get(agentId);
+      if (!a || !b || b.day.equityStartUsd === null || !Number.isFinite(deltaUsd) || !deltaUsd) return null;
+      b.day.equityStartUsd = round2(b.day.equityStartUsd + deltaUsd);
+      if (b.equityWindow?.length) { b.equityWindow = b.equityWindow.map((x) => round2(x + deltaUsd)); b.equityNow = Math.max(...b.equityWindow); }
+      entry(a, { kind: "equity.base", deltaUsd, why, equityStartUsd: b.day.equityStartUsd });
+      persist(a);
+      return b.day.equityStartUsd;
+    },
+    /** An owner's agent that waited for a deposit on its own Strike account trades once it is credited. */
+    funded(agentId) {
+      const a = agents.find((x) => x.agentId === agentId);
+      if (!a?.stopped || a.stoppedReason !== "deposit needed") return false;
+      a.stopped = false;
+      a.stoppedReason = null;
+      for (const l of legsOf(books.get(agentId))) if (l.h?.state.frozen && l.h.state.manual) l.h.resume();
+      entry(a, { kind: "funded" });
+      return true;
     },
     /**
      * The owner winds an agent down: stopped, then it quotes only the side that sells its inventory, hedged on fill,
@@ -515,8 +575,9 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
       a.mandate = mandate;
       a.signatureOk = true;
       a.stopped = false;
+      a.stoppedReason = null;
       a.unwinding = false;
-      for (const l of legsOf(books.get(agentId))) if (l.h?.state.frozen && l.h.state.manual) l.h.resume();
+      for (const l of legsOf(books.get(agentId))) { l.h?.setMandate(mandate); if (l.h?.state.frozen && l.h.state.manual) l.h.resume(); }
       entry(a, { kind: "mandate.signed", mandateHash: mandateHash(mandate), expiry: mandate.expiry });
       feed.agent(agentId, { mandate: mandateCard(mandate) });
       return mandateHash(mandate);

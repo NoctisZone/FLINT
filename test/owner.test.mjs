@@ -340,3 +340,50 @@ test("payout retry and room, further deposits, unwind and a rotated Strike key: 
     assert.equal((await call("agents/mm-rule/strike-key/rotate", "GET")).status, 404);
   } finally { server.close(); }
 });
+
+test("a name a built-in, a registered agent or a Strike account holds is taken; a payout of Infinity is refused; a mainnet address gets no challenge; an unpaid order is cancelled by its owner, a paid one not", async () => {
+  const { agents } = world();
+  const jobs = new Map();
+  const onboarding = {
+    create: async (spec) => { const job = { agentId: spec.agentId, index: 5, owner: spec.owner, mind: spec.mind, status: "running", steps: [{ step: "wallet", status: "done" }, { step: "pay", status: "running" }] }; jobs.set(spec.agentId, job); return job; },
+    get: (id) => jobs.get(id) ?? null,
+    retry: async () => { throw Object.assign(new Error("nothing to retry"), { status: 409 }); },
+    cancel: async (id) => { const j = jobs.get(id); j.status = "cancelled"; jobs.delete(id); return j; },
+  };
+  const o = ownerApi({ agents, gateway: { stateOf: () => ({}) }, onboarding, pricing: PRICING, nameTaken: (n) => n === "nova-69", withdrawals: { start: async (id, usd) => ({ usd }), list: () => [] }, now: () => T0 });
+  const c = o.api.challenge({ address: owner.address });
+  const S = { address: owner.address, token: o.api.session({ nonce: c.body.nonce, signature: sign(owner, c.body.message) }).body.token };
+  const m = { ...agents[0].mandate, agentId: "nova-69", owner: owner.address };
+  assert.deepEqual((await o.api.create(S, { name: "nova-69", mind: "rules", mandate: m, signature: sign(owner, mandateHash(m)), depositAda: 850 })).body.error, "nova-69 is taken");
+  assert.equal((await o.api.withdraw(S, "mm-rule", { usd: Infinity })).status, 400);
+  assert.equal((await o.api.withdraw(S, "mm-rule", { usd: "NaN" })).status, 400);
+  assert.equal((await o.api.withdraw(S, "mm-rule", { usd: 5 })).status, 201);
+  // a mainnet address: the same bytes with the network nibble set to 1
+  const mainnet = Uint8Array.from(owner.addressBytes); mainnet[0] = (mainnet[0] & 0xf0) | 1;
+  assert.match(o.api.challenge({ addressHex: Buffer.from(mainnet).toString("hex") }).body.error, /mainnet address/);
+  assert.match(o.api.challenge({ address: "addr1" + owner.address.slice("addr_test1".length) }).body.error, /mainnet address/);
+  assert.throws(() => addressOf(mainnet), /mainnet/);
+  // an order waiting for its payment is cancelled by its owner only; once paid it is not
+  const m2 = { ...m, agentId: "nova-70" };
+  assert.equal((await o.api.create(S, { name: "nova-70", mind: "rules", mandate: m2, signature: sign(owner, mandateHash(m2)), depositAda: 850 })).status, 201);
+  assert.equal((await o.api.onboarding({ address: stranger.address }, "nova-70", false, true)).status, 404);
+  jobs.get("nova-70").steps[1].status = "done";
+  assert.equal((await o.api.onboarding(S, "nova-70", false, true)).status, 409, "paid: too late to cancel");
+  jobs.get("nova-70").steps[1].status = "running";
+  const r = await o.api.onboarding(S, "nova-70", false, true);
+  assert.deepEqual([r.status, r.body.job.status, jobs.has("nova-70")], [200, "cancelled", false]);
+  assert.equal((await o.api.create(S, { name: "nova-70", mind: "rules", mandate: m2, signature: sign(owner, mandateHash(m2)), depositAda: 850 })).status, 201, "the name is free again");
+});
+
+test("a market the gateway closed for new agents is refused at order time, by name", async () => {
+  const { agents } = world();
+  const m = { ...profiles({ owner: owner.address, expiry: "2026-10-30T00:00:00Z" })["mm-rule"], agentId: "nova-9", strike: { ...profiles({ owner: owner.address, expiry: "2026-10-30T00:00:00Z" })["mm-rule"].strike, markets: ["ADA-USD"] }, midnight: { ...profiles({ owner: owner.address, expiry: "2026-10-30T00:00:00Z" })["mm-rule"].midnight, pairs: ["tADA/tUSD"] } };
+  const hash = mandateHash(m);
+  const o = ownerApi({ agents, gateway: { stateOf: () => ({}) }, onboarding: { create: async () => ({}), get: () => null, retry: async () => ({}) }, pricing: { ...PRICING, marketsOff: ["ADA-USD"] }, now: () => T0 });
+  const c = o.api.challenge({ address: owner.address });
+  const sess = o.api.session({ nonce: c.body.nonce, signature: sign(owner, c.body.message) });
+  const S = { address: owner.address, token: sess.body.token };
+  const r = await o.api.create(S, { name: "nova-9", mind: "rules", depositAda: 500, mandate: m, signature: sign(owner, hash) });
+  assert.equal(r.status, 400);
+  assert.equal(r.body.error, "ADA-USD is not open for new agents on this network yet");
+});

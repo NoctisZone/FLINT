@@ -325,6 +325,90 @@ test("the owner unwinds a stopped maker: it asks exactly its inventory, the citi
   await g.stop();
 });
 
+test("fills, decisions and refusals carry their pair; a quote past its expiry leaves the feed; a stopped agent's tools are refused with rule stopped and only its tool orders are cancelled", async () => {
+  const { venue } = world();
+  const feed = feedState({ runStart: "2026-10-22T12:00:00Z" });
+  const cancelled = [];
+  const strike = {
+    placeOrder: async () => ({ status: "pending" }), balances: async () => [{ marginBalance: "300" }], positions: async () => ({ positions: [] }),
+    openOrders: async () => ({ count: 2, orders: [{ ClientOrderID: "mm-rule-tool-1" }, { ClientOrderID: "mm-rule-hedge-9-1" }] }), cancel: async (o) => { cancelled.push(o.clientOrderId); return {}; },
+  };
+  const agents = [
+    { agentId: "mm-rule", mandate: P["mm-rule"], mind: "maker", venue: venue("mm-rule", { btc: 0.01, usd: 800, spendable: { btc: 0.004, usd: 320 } }), strike, stream: () => ({ close() {} }) },
+    { agentId: "citizen-a", mandate: P["citizen-a"], mind: "citizen", side: "buy", venue: venue("citizen-a", { btc: 0, usd: 500, spendable: { btc: 0, usd: 200 } }) },
+  ];
+  let t = T0;
+  const log = [];
+  const g = gateway({ agents, mark: async () => 80_000, feed, log: (e) => { log.push(e); return e; }, now: () => t, rnd: () => 0 });
+  feed.quoteOpen({ quoteId: "stale", agentId: "mm-rule", pair: "tBTC/tUSD", side: "ask", sizeBtc: 0.001, price: 81_000, expiresAt: "2026-10-22T11:59:00Z" });
+  await g.round();
+  assert.ok(!feed.get("quotes").quotes.some((q) => q.quoteId === "stale"), "lapsed before the round: gone from the feed");
+  assert.deepEqual(feed.get("decisions").decisions.map((d) => [d.action, d.pair, d.symbol]), [["midnight.take", "tBTC/tUSD", "BTC-USD"], ["midnight.quote", "tBTC/tUSD", "BTC-USD"], ["midnight.quote", "tBTC/tUSD", "BTC-USD"]]);
+  t = T0 + 20_000;
+  await g.round();
+  assert.equal(feed.get("fills").fills[0].midnight.pair, "tBTC/tUSD");
+  await g.stop("mm-rule");
+  assert.deepEqual(cancelled, ["mm-rule-tool-1"], "the tool order pulled, the hedger's own order left to it");
+  const r = await g.portFor("mm-rule").postQuote({ side: "ask", sizeBtc: 0.001, price: 80_200 }, "an outside mind");
+  assert.equal(r.refused.rule, "stopped");
+  const ref = feed.get("refusals").refusals[0];
+  assert.deepEqual([ref.rule, ref.pair, ref.symbol, ref.agentId], ["stopped", "tBTC/tUSD", "BTC-USD", "mm-rule"]);
+  assert.equal((await g.portFor("mm-rule").closePosition("closed by the owner")).closed, 0, "an owner's reduce-only close still passes");
+  await g.stop();
+});
+
+test("stop means flat: a resting hedge becomes a market order; when Strike cancels it a limit rests again and the card counts it; the stop and the hand freeze outlive a restart; a mandate signed anew reaches the hedger", async () => {
+  const { venue } = world();
+  const feed = feedState({ runStart: "2026-10-22T12:00:00Z" });
+  const orders = [];
+  let streamOn = null;
+  const strike = { placeOrder: async (o) => { orders.push(o); return { status: "pending" }; }, balances: async () => [{ marginBalance: "300" }], positions: async () => ({ positions: [] }), order: async ({ clientOrderId }) => ({ ClientOrderID: clientOrderId, Status: "open", Filled: "0" }), openOrders: async () => ({ count: 0 }), cancel: async () => ({}) };
+  const agents = [
+    { agentId: "mm-rule", mandate: P["mm-rule"], mind: "maker", venue: venue("mm-rule", { btc: 0.01, usd: 800, spendable: { btc: 0.004, usd: 320 } }), strike, stream: (onEvent) => { streamOn = onEvent; return { close() {} }; } },
+    { agentId: "citizen-a", mandate: P["citizen-a"], mind: "citizen", side: "buy", venue: venue("citizen-a", { btc: 0, usd: 500, spendable: { btc: 0, usd: 200 } }) },
+  ];
+  let t = T0;
+  const saved = {};
+  const g = gateway({ agents, mark: async () => 80_000, feed, log: (e) => e, now: () => t, rnd: () => 0, saveBooks: (id, snap) => { saved[id] = snap; } });
+  await g.round();
+  t = T0 + 20_000;
+  await g.round();
+  const h = g.hedgerOf("mm-rule");
+  assert.equal(orders.length, 1, "the fill's market hedge");
+  await streamOn({ kind: "order", symbol: "BTC-USD", clientOrderId: orders[0].clientOrderId, status: "CANCELED", terminal: true, closeReason: "market_order_exceeded_slippage", at: t });
+  assert.deepEqual([orders.length, orders[1].type, h.pending[0].resting], [2, "limit", true], "a thin book: the hedge rests as a limit");
+  const r = await g.stop("mm-rule");
+  assert.deepEqual([orders.length, orders[2].type, orders[2].side, orders[2].size, r.hedges["BTC-USD"].startsWith("market order")], [3, "market", "buy", 0.00187, true], "stop: the limit pulled, the remainder sent at once");
+  await streamOn({ kind: "order", symbol: "BTC-USD", clientOrderId: orders[2].clientOrderId, status: "CANCELED", terminal: true, closeReason: "market_order_exceeded_slippage", at: t + 100 });
+  t = T0 + 40_000;
+  await g.round();
+  const card = feed.get("agents").agents.find((a) => a.agentId === "mm-rule");
+  assert.deepEqual([card.status, card.resting, card.pending, card.legs["BTC-USD"].resting, card.unhedgedUsd], ["stopped", 1, 1, 1, -149.6], "a limit rests again, the agent stays stopped");
+  assert.deepEqual([saved["mm-rule"].stopped, saved["mm-rule"].frozen, saved["mm-rule"].manual], [true, true, true], "the books carry the stop and the hand freeze");
+  // the same books in a new gateway: still stopped, still frozen by hand, the carried exposure hedged again without lifting the freeze
+  const later = [];
+  const a2 = { agentId: "mm-rule", mandate: P["mm-rule"], mind: "maker", venue: venue("mm-rule", { btc: 0.01, usd: 800, spendable: { btc: 0.004, usd: 320 } }), strike: { ...strike, placeOrder: async (o) => { later.push(o); return { status: "pending" }; } }, stream: () => ({ close() {} }) };
+  const g2 = gateway({ agents: [a2], mark: async () => 80_000, feed: feedState(), log: (e) => e, now: () => t, books: { "mm-rule": saved["mm-rule"] } });
+  await g2.rehedge();
+  const h2 = g2.hedgerOf("mm-rule");
+  assert.deepEqual([a2.stopped, h2.state.frozen, h2.state.manual, later.length, later[0]?.type], [true, true, true, 1, "market"]);
+  await g2.round();
+  assert.equal(feed.get("quotes").quotes.filter((q) => q.agentId === "mm-rule").length, 0, "stopped: nothing quoted");
+  // a mandate signed anew: the hedger's deadline and band follow it, the stop ends
+  g2.setMandate("mm-rule", { ...P["mm-rule"], risk: { ...P["mm-rule"].risk, hedgeWithinSec: 7 } });
+  assert.deepEqual([a2.stopped, h2.state.frozen, h2.state.mandate.risk.hedgeWithinSec], [false, false, 7]);
+  // a payout moves the day's baseline down, a deposit up
+  const b0 = feed.get("agents").agents[0] ? null : null;
+  await g2.round();
+  const start = feed.get("agents").agents.find((a) => a.agentId === "mm-rule").equityStartUsd;
+  assert.equal(g2.adjustEquityStart("mm-rule", -20, "payout"), Math.round((start - 20) * 100) / 100);
+  assert.equal(g2.adjustEquityStart("mm-rule", 50, "deposit"), Math.round((start + 30) * 100) / 100);
+  assert.equal(g2.adjustEquityStart("ghost", 5, "x"), null);
+  void b0;
+  await g.stop();
+  await g2.stop();
+});
+
 test("a rotated Strike key: the hedger's orders go through the new client, the old stream is closed and a new one opened, the position resynced", async () => {
   const { venue } = world();
   const feed = feedState();

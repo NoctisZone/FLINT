@@ -4,9 +4,7 @@ Private market makers on Midnight, hedged on Strike, inside a mandate their owne
 
 Autonomous agents, each with a Cardano and a Midnight wallet, quote tBTC/tUSD, tADA/tUSD or tSOL/tUSD on Midnight's offer board. Every fill is hedged on the matching Strike perpetual (BTC-USD, ADA-USD or SOL-USD) within seconds. A mandate gateway checks every action against the owner's limits before anything is built, logs every decision in a hash-linked log, and reconciles both venues. Outside agents reach the same tools over MCP and pay per call with x402 on Cardano.
 
-- Concept: `STRIKE_HACK.MD`
-- Status and feed contract: `STATUS.md`
-- Working notes for the code: `CLAUDE.md`
+- The feed and the owner API, route by route: `docs/API.md`
 
 ## Run
 
@@ -19,7 +17,7 @@ npm run gateway -- --agents mm-rule:0,citizen-b:1,citizen-a:2,mm-claude:3,rogue:
 npm run liquidity        # the stand-in market maker on Strike testnet, all three markets
 ```
 
-The gateway needs Midnight preprod (an indexer, a node, a proof server on localhost) and a Strike testnet account; `CLAUDE.md` has the details.
+The gateway needs Midnight preprod (an indexer, a node, a proof server on localhost) and a Strike testnet account; `.env.example` names every setting.
 
 A quote is a proven swap half waiting for its taker. By default it waits on the offer board of the agent's NIGHTGATE server (`--board server`). With `--board gateway` it waits inside the gateway instead: the maker's half is handed to the taker by this process and the swap settles on chain exactly as from the board, one atomic transaction, sponsored. That mode runs on a network where the offer board is not live yet; the feed says which one is on in `meta.midnightBoard`.
 
@@ -27,7 +25,7 @@ A quote is a proven swap half waiting for its taker. By default it waits on the 
 
 `arena/flint.html` is the page over the feed, one file. The gateway and the mock feed serve it at `/`, so after `npm run mock-feed` it is at `http://localhost:4481/`, and a running gateway shows the live run the same way; opened as a file it simulates a run (`arena/README.md` has the switches).
 
-Two views. The **Arena** is public: the agent network, the counters, one trade followed from offer to proof, the private book on Strike's price with a switch between BTC, ADA and SOL, the risk dials, what the agents say, what the rules caught, the proofs on Midnight, and a tour. **Your agents** works with a CIP-30 wallet on preprod (Lace, Eternl): the wallet whose address the mandates name as owner signs in over `/owner/` and sees its agents, each with a terminal (offers, trades, hedges, decisions, refusals, rules, money, keys) and the controls pause, stop, close position and unwind.
+Two views. The **Arena** is public: the agent network (the agents, the gateway, Midnight with its private trades and proofs, Strike with its three markets; every action a moving dot), the counters, one trade followed from offer to proof, the private book on Strike's price with a switch between BTC, ADA and SOL, the risk dials, what the agents say, what the rules caught, the proofs on Midnight, and a tour. **Your agents** works with a CIP-30 wallet on preprod (Lace, Eternl or Vespr; a picker when several are installed): the wallet whose address the mandates name as owner signs in over `/owner/` and sees its agents, each with a terminal (offers, trades, hedges, decisions, refusals, rules, money, keys) and the controls pause, stop, close position and unwind.
 
 An owner orders a new agent there and pays for it from their wallet: name, style, mind (rules or Claude) and the markets it may trade (any of the three), one signature over its rules, one transaction that carries the set-up fee to the project and the deposit to the agent's own wallet, which puts it into its own Strike account (Strike accepts deposits only from the wallet it registered for the account). The gateway then gives the agent a Midnight wallet with test coins for each market, anchors its mandate and puts it in the loop with the others; the page follows the nine steps and the agent quotes within about eight minutes. Money comes back the same way: a payout takes it off Strike to the agent's wallet and on to the owner's, capped by Strike's limits; a deposit into a running agent is paid like an order. An agent's rules can be changed and signed again at any time; its markets cannot. Each agent can have a tools key, issued by its owner, which an outside mind sends as a bearer token to the agent's tools address; without one the address stays open. The owner can also rotate the agent's Strike API key. An agent that sets itself up over the API pays the set-up fee with x402 and the deposit money with its own key. Agents made this way are listed in `data/agents.json` and come back on every restart.
 
@@ -48,6 +46,7 @@ Strike is where every agent hedges. What the gateway does with it:
 
 - tBTC, tADA, tSOL and tUSD are the project's own tokens on Midnight preprod; there is no bridge. An agent trades the markets chosen when it is ordered, one or all three, with a hedger per market and its limits holding on each; the citizens take on all three. The citizens that take quotes are the team's own counterparties.
 - Strike runs on testnet. Its books have no market maker, so `npm run liquidity` quotes both sides of BTC-USD, ADA-USD and SOL-USD from a separate account of ours and the feed says so in `meta.strikeLiquidity`; on mainnet the real book takes that role. No real money moves anywhere.
+- ADA-USD is closed for new agents while Strike's testnet engine carries a minimum limit price above ADA's mark, so nothing there can be hedged (`MARKETS_OFF`, shown in `meta.orders.marketsOff` and greyed out on the page); the stand-in skips such a market too. Agents already on it keep their mandate.
 - Between a fill and its hedge there is leg risk. The watchdog bounds it to `hedgeWithinSec` and freezes the agent after that; it does not remove it.
 - The proofs on Midnight cover what the gateway recorded. They hide the numbers, they do not make Strike's data trustless; the reconciler is what ties them to Strike's fill history.
 - The gateway holds the agents' keys: the Strike API wallets, the Cardano wallets, the Midnight wallet state. An owner signs the rules and pays from their own wallet, but trusts the operator with the agent. The agent's Strike key can trade, not withdraw; a payout goes to the wallet Strike registered, the agent's own, and from there to the owner.
@@ -69,14 +68,10 @@ Strike is where every agent hedges. What the gateway does with it:
 
 ```
 arena/     the page over the feed, one file, with its design notes, logos and fonts
-gateway/   mandate, checks, markets, hedge, midnight venue, strike client, stream and builder connect, cardano wallets and transfers, onboarding, payouts, owner API, registry, tools keys, capital trail, x402, tools, feed, log, reconcile, attestations, liquidity plan, gateway loop
-agents/    mandate profiles, rule maker and citizens, rogue (the Claude maker is market/llm-trader.mjs)
+gateway/   mandate, checks, markets, hedge, midnight venue, the two boards a quote can wait on, strike client, stream and builder connect, cardano wallets and transfers, chain reads over ODATANO, onboarding, payouts, owner API, registry, tools keys, capital trail, x402, tools, feed, log, reconcile, attestations, liquidity plan, gateway loop
+agents/    mandate profiles, rule maker and citizens, the Claude maker, rogue
 cli/       gateway, owner (the owner's console headless), onboard (treasury, Strike accounts and deposits by hand), liquidity (the stand-in market maker), strike, live (Midnight by hand), rogue, pay-demo, mock-feed
 market/    the Midnight side: token factory, offer board, a wallet over its NIGHTGATE MCP server
 facilitator/  an x402 facilitator over the ODATANO API
 test/      node --test, stand-ins for every venue; no chain
 ```
-
-## License
-
-Apache-2.0

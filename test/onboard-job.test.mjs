@@ -54,3 +54,25 @@ test("a job read back from disk after a restart: the step that was running is fa
   assert.deepEqual(ran.map((x) => x[0]), ["mint", "strike", "open", "register", "quote"]);
   assert.equal(ran[0][1], 3, "the coins minted before the restart are known");
 });
+
+test("the tools key is in the first view that carries it and gone from the job after; a cancel ends a step waiting on the owner and closes a failed job", async () => {
+  const steps = Object.fromEntries(STEPS.map((s) => [s, async (ctx) => { if (s === "register") ctx.set("toolsKey", "flk_secret"); }]));
+  const j = onboardJob({ agentId: "nova-7", index: 5, owner: "o", mind: "rules", steps, now: () => T0 });
+  await j.run();
+  assert.equal(j.view().toolsKey, "flk_secret");
+  assert.deepEqual([j.view().toolsKey, "toolsKey" in j.job.data], [null, false], "shown once");
+  await assert.rejects(j.cancel(), /nothing to cancel/);
+  // a job waiting for the owner's transaction: the cancel ends the wait, the job is cancelled, not failed
+  const waiting = Object.fromEntries(STEPS.map((s) => [s, async (ctx) => { if (s === "mint") { const got = await ctx.waitFor("pay", 60_000); if (!got) throw new Error("not signed in time"); } }]));
+  const w = onboardJob({ agentId: "nova-8", index: 6, owner: "o", mind: "rules", steps: waiting, now: () => T0, setTimer: () => 1, clearTimer: () => {} });
+  const run = w.run();
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(w.view().waitingFor, ["pay"]);
+  const c = await w.cancel();
+  assert.deepEqual([c.status, c.error, (await run).status, w.view().steps[1].status, w.view().steps[1].detail], ["cancelled", "cancelled by the owner", "cancelled", "failed", "cancelled by the owner"]);
+  assert.throws(() => w.run(), /cancelled/);
+  // a failed job is closed the same way
+  const f = onboardJob({ agentId: "nova-9", index: 7, owner: "o", mind: "rules", steps: Object.fromEntries(STEPS.map((s) => [s, async () => { throw new Error("no"); }])), now: () => T0 });
+  await f.run();
+  assert.equal((await f.cancel()).status, "cancelled");
+});

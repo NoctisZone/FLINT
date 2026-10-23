@@ -76,3 +76,14 @@ test("setMarks keeps every market's mark and history; BTC-USD also fills strikeM
   assert.deepEqual(Object.keys(m.markets), ["BTC-USD", "ADA-USD"], "a market without a mark is not listed");
   assert.deepEqual([m.markets["ADA-USD"].mark, m.markets["ADA-USD"].marks.map((x) => x.p), m.markets["BTC-USD"].funding], [0.42, [0.41, 0.42], null]);
 });
+
+test("marks saved by the last run come back on the feed at start, and every update hands the rings to the keeper", () => {
+  const kept = [];
+  const s = feedState({ runStart: "2026-10-23T07:00:00Z", marks: { "BTC-USD": [{ t: "2026-10-23T06:58:00Z", p: 81_000 }, { t: "2026-10-23T06:59:00Z", p: 81_010 }], "SOL-USD": [] }, onMarks: (m) => kept.push(m) });
+  const m0 = s.get("meta");
+  assert.deepEqual([m0.strikeMark, m0.marks.length, Object.keys(m0.markets)], [81_010, 2, ["BTC-USD"]], "an empty ring is not a market");
+  s.setMarks({ "BTC-USD": { mark: 81_020 }, "SOL-USD": { mark: 104.5 } });
+  assert.deepEqual(kept.length, 1);
+  assert.deepEqual(kept[0]["BTC-USD"].map((x) => x.p), [81_000, 81_010, 81_020]);
+  assert.deepEqual(kept[0]["SOL-USD"].map((x) => x.p), [104.5]);
+});

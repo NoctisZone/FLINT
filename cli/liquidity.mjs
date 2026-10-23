@@ -34,9 +34,9 @@ await c.syncClock();
 const books = new Map();
 for (const symbol of symbols) {
   const rules = await c.market(symbol);
-  const tick = Number(rules.order_tick_price ?? 0.1), step = Number(rules.order_limit_step_size ?? 0.00001);
+  const tick = Number(rules.order_tick_price ?? 0.1), step = Number(rules.order_limit_step_size ?? 0.00001), minPrice = Number(rules.order_min_price ?? 0);
   const places = Math.max(0, Math.ceil(-Math.log10(step) - 1e-9));
-  books.set(symbol, { symbol, tick, step, places, prefix: `${PREFIX}-${symbol.split("-")[0].toLowerCase()}`, lastPosition: null, fills: 0 });
+  books.set(symbol, { symbol, tick, step, places, minPrice, prefix: `${PREFIX}-${symbol.split("-")[0].toLowerCase()}`, lastPosition: null, fills: 0, skipped: false });
   log(`liquidity on ${symbol}: ${sizeUsd} USD a side, ${spreadBps} bps (${reduceBps} on the reducing side), tick ${tick}, step ${step}, cap ${maxPositionUsd} USD`);
 }
 let stopping = false;
@@ -48,6 +48,9 @@ async function mine(b) {
 
 async function tickOnce(b) {
   const mark = Number((await c.markPrice(b.symbol)).p);
+  // an engine whose smallest limit price sits above the mark rejects every order: say so once, quote nothing
+  if (b.minPrice > mark) { if (!b.skipped) { b.skipped = true; log(`${b.symbol}: the engine's smallest limit price is ${b.minPrice} USD, above the mark ${mark}; no quotes until that changes`); } return; }
+  if (b.skipped) { b.skipped = false; log(`${b.symbol}: quoting again, mark ${mark} is above the smallest limit price`); }
   const pos = (await c.positions()).positions?.find((p) => p.symbol === b.symbol);
   const positionBtc = pos ? Number(pos.size) : 0;
   if (b.lastPosition !== null && Math.abs(positionBtc - b.lastPosition) > 1e-9) { b.fills += 1; log(`${b.symbol} filled: position ${b.lastPosition} → ${positionBtc} (${b.fills} fills so far)`); }

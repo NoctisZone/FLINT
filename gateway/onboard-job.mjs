@@ -45,6 +45,7 @@ export function onboardJob({ agentId, index, owner, mind, kind = "onboard", orde
   function run() {
     if (running) return running;
     if (job.status === "done") return Promise.resolve(job);
+    if (job.status === "cancelled") throw Object.assign(new Error("the order was cancelled"), { status: 409 });
     running = (async () => {
       job.status = "running"; job.error = null; touch();
       for (const s of job.steps) {
@@ -52,10 +53,11 @@ export function onboardJob({ agentId, index, owner, mind, kind = "onboard", orde
         s.status = "running"; s.at = iso(); s.detail = null; touch();
         try {
           const detail = await steps[s.step](ctx, s);
+          if (cancelled) throw new Error("the order was cancelled");
           s.status = "done"; s.at = iso(); if (detail) s.detail = detail; touch();
         } catch (err) {
-          s.status = "failed"; s.at = iso(); s.detail = String(err?.message ?? err).slice(0, 240);
-          job.status = "failed"; job.error = `${s.step}: ${s.detail}`; touch();
+          s.status = "failed"; s.at = iso(); s.detail = cancelled ? "cancelled by the owner" : String(err?.message ?? err).slice(0, 240);
+          job.status = cancelled ? "cancelled" : "failed"; job.error = cancelled ? "cancelled by the owner" : `${s.step}: ${s.detail}`; touch();
           return job;
         }
       }
@@ -64,6 +66,7 @@ export function onboardJob({ agentId, index, owner, mind, kind = "onboard", orde
     })().finally(() => { running = null; });
     return running;
   }
+  let cancelled = false;
 
   return {
     agentId: job.agentId,
@@ -77,6 +80,15 @@ export function onboardJob({ agentId, index, owner, mind, kind = "onboard", orde
       return run();
     },
     get running() { return running !== null; },
+    /** The owner takes the order back: a step waiting on them ends now, a failed job is closed; resolves once the job stands still. */
+    async cancel() {
+      if (job.status === "done" || job.status === "cancelled") throw Object.assign(new Error(`job is ${job.status}, nothing to cancel`), { status: 409 });
+      cancelled = true;
+      for (const [what, w] of waiting) { waiting.delete(what); clearTimer(w.timer); w.resolve(null); }
+      if (running) await running;
+      else { job.status = "cancelled"; job.error = "cancelled by the owner"; touch(); }
+      return job;
+    },
     /** Something the owner hands in for a waiting step; false when no step waits for it (kept for the next one that asks). */
     deliver(what, value) {
       const w = waiting.get(what);
@@ -84,10 +96,12 @@ export function onboardJob({ agentId, index, owner, mind, kind = "onboard", orde
       waiting.delete(what); clearTimer(w.timer); w.resolve(value); return true;
     },
     get waitingFor() { return [...waiting.keys()]; },
-    /** What the owner sees: the steps, the agent's Cardano address and what to send there, its tools key, never the rest of `data`. */
+    /** What the owner sees: the steps, the agent's Cardano address and what to send there, never the rest of `data`. The tools key is in the first view that carries it, then gone from the job. */
     view() {
       const { data, ...rest } = job;
-      return { ...rest, current: current()?.step ?? null, waitingFor: [...waiting.keys()], steps: job.steps.map((s) => ({ ...s })), cardano: data.cardano ?? null, fundAda: data.fundAda ?? null, toolsKey: data.toolsKey ?? null, ...(data.pub ?? {}) };
+      const toolsKey = data.toolsKey ?? null;
+      if (toolsKey) { delete data.toolsKey; save(job); }
+      return { ...rest, current: current()?.step ?? null, waitingFor: [...waiting.keys()], steps: job.steps.map((s) => ({ ...s })), cardano: data.cardano ?? null, fundAda: data.fundAda ?? null, toolsKey, ...(data.pub ?? {}) };
     },
   };
 }

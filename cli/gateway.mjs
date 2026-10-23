@@ -123,6 +123,7 @@ async function rulesOf(symbol) {
  */
 async function buildAgent({ agentId, index, mind, side, mandate, name = agentId, trader = null, signatureOk = true, stopped = false }) {
   const kind = mind === "claude" ? "maker" : mind;
+  let stoppedReason = null;
   if (!trader) {
     const t0 = Date.now();
     trader = await openMcpTrader({ name: `trader-${index}`, seedHex: midnightSeedOf(cfg.master, index), key: cfg.nightgateKey, cfg, index, onProgress: (p) => { if (p.seconds % 30 === 0) log(`${agentId}: wallet syncing, ${p.seconds}s`); } });
@@ -149,8 +150,9 @@ async function buildAgent({ agentId, index, mind, side, mandate, name = agentId,
       await patient(`${agentId}: Strike clock`, () => strike.syncClock());
       const bal = Number((await patient(`${agentId}: Strike balance`, () => strike.balances()))[0]?.walletBalance ?? 0);
       if (bal > 0) log(`${agentId}: own Strike account ${own.accountId} with ${bal} USD, builder ${own.builderCode} at ${builderFeeBps} bps`);
-      else if (process.env.STRIKE_KEY) { log(`${agentId}: own Strike account ${own.accountId} holds 0 USD; using the shared key this run`); keyUsed = process.env.STRIKE_KEY; strike = strikeClient({ baseUrl: strikeBase, privateKeyHex: keyUsed }); }
-      else log(`${agentId}: own Strike account ${own.accountId} holds 0 USD and there is no shared key: hedges will be rejected`);
+      // the shared key stands in for a built-in only: an owner's agent trades its owner's money or waits for it
+      else if (process.env.STRIKE_KEY && agentId in all) { log(`${agentId}: own Strike account ${own.accountId} holds 0 USD; using the shared key this run`); keyUsed = process.env.STRIKE_KEY; strike = strikeClient({ baseUrl: strikeBase, privateKeyHex: keyUsed }); }
+      else { stopped = true; stoppedReason = "deposit needed"; log(`${agentId}: own Strike account ${own.accountId} holds 0 USD; it waits, stopped, for a deposit`); }
     }
     await patient(`${agentId}: Strike clock`, () => strike.syncClock());
     const settings = await patient(`${agentId}: Strike symbols`, () => strike.symbols());
@@ -175,7 +177,7 @@ async function buildAgent({ agentId, index, mind, side, mandate, name = agentId,
   }
   // a citizen looks every round and acts on about half of them; a maker quotes 120 USD a side, above Strike's minimum and inside what a citizen's coins pay
   // the shared key serves every maker without an account of its own: its fills and position are not one agent's
-  return { agentId, name, mandate, mind: kind, side, venue, strike, stream, sharedStrike: Boolean(keyUsed) && keyUsed === process.env.STRIKE_KEY, wallets: walletsOf(agentId), trader, brain, leverage: mandate.strike.maxLeverage, signatureOk, stopped, market: symbol, markets: symbols, rules, step: market?.step, tick: market?.tick, minQuoteUsd: market?.minNotionalUsd, options: kind === "citizen" ? { rate: Number(process.env.CITIZEN_RATE || 0.5) } : { sizeUsd: Number(process.env.MAKER_SIZE_USD || 120) } };
+  return { agentId, name, mandate, mind: kind, side, venue, strike, stream, sharedStrike: Boolean(keyUsed) && keyUsed === process.env.STRIKE_KEY, wallets: walletsOf(agentId), trader, brain, leverage: mandate.strike.maxLeverage, signatureOk, stopped, stoppedReason, market: symbol, markets: symbols, rules, step: market?.step, tick: market?.tick, minQuoteUsd: market?.minNotionalUsd, options: kind === "citizen" ? { rate: Number(process.env.CITIZEN_RATE || 0.5) } : { sizeUsd: Number(process.env.MAKER_SIZE_USD || 120) } };
 }
 
 const agents = [];
@@ -207,6 +209,8 @@ const saveBooks = (agentId, snap) => { books[agentId] = snap; fs.writeFileSync(B
 for (const [id, sizes] of Object.entries(strikePositions)) {
   const all = books[id];
   if (!all) continue;
+  // the shared account's position is nobody's own: an agent on the shared key keeps its books
+  if (agents.find((a) => a.agentId === id)?.sharedStrike) continue;
   // the first market's books are the flat ones; every further market's sit under `legs`
   for (const [i, [sym, size]] of Object.entries(sizes).entries()) {
     const b = i === 0 ? all : (all.legs ??= {})[sym] ??= { midnightInventoryBtc: 0, strikePositionBtc: 0, unhedgedBtc: 0 };
@@ -220,7 +224,11 @@ for (const [id, sizes] of Object.entries(strikePositions)) {
 }
 runStart.books = structuredClone(books);
 for (const [id, b] of Object.entries(books)) if (ids().includes(id)) log(`${id}: books from the last run: inventory ${b.midnightInventoryBtc} BTC, Strike ${b.strikePositionBtc} BTC, unhedged ${b.unhedgedBtc} BTC${b.frozen ? `, frozen (${b.frozenReason})` : ""}`);
-const feed = feedState();
+// the marks of every market outlive a run: read at start, written after every round
+const MARKS_FILE = path.join("data", "marks.json");
+let savedMarks = null;
+try { savedMarks = JSON.parse(fs.readFileSync(MARKS_FILE, "utf8")); } catch {}
+const feed = feedState({ marks: savedMarks, onMarks: (m) => { try { fs.writeFileSync(MARKS_FILE, JSON.stringify(m)); } catch (err) { log(`marks: ${err.message}`); } } });
 const jobs = new Map(); // agentId → onboarding job, for the owner API below and the loop that fills it in
 const keys = agentKeys();
 const SESSIONS = path.join("data", "owner-sessions.json");
@@ -240,7 +248,9 @@ function paidCall(payment, what, agent, extra = {}) {
 const ownerUrl = (process.env.PUBLIC_OWNER_URL || `http://localhost:${port}/owner/`).replace(/\/?$/, "/");
 const treasury = treasuryWallet(cfg.master); // the project wallet: where fees go unless X402_PAY_TO says otherwise
 /** What a new agent costs its owner; the fee goes where x402 payments go. */
-const pricing = { feeAda: Number(process.env.SETUP_FEE_ADA ?? 20), feeClaudeAda: Number(process.env.SETUP_FEE_CLAUDE_ADA ?? 40), keyAda: Number(ownerPrices.key) / 1e6, minDepositAda: Number(process.env.MIN_DEPOSIT_ADA ?? 500), minTopUpAda: Number(process.env.MIN_TOPUP_ADA ?? 50), payTo: process.env.X402_PAY_TO || treasury.address };
+const pricing = { feeAda: Number(process.env.SETUP_FEE_ADA ?? 20), feeClaudeAda: Number(process.env.SETUP_FEE_CLAUDE_ADA ?? 40), keyAda: Number(ownerPrices.key) / 1e6, minDepositAda: Number(process.env.MIN_DEPOSIT_ADA ?? 500), minTopUpAda: Number(process.env.MIN_TOPUP_ADA ?? 50), payTo: process.env.X402_PAY_TO || treasury.address,
+  // markets no new agent may be ordered on for now (a Strike testnet book that cannot be hedged); running agents keep theirs
+  marketsOff: (process.env.MARKETS_OFF || "").split(",").map((s) => s.trim()).filter(Boolean) };
 feed.setOrders({ ...pricing, x402: Boolean(x402) });
 feed.setLiquidity(process.env.STRIKE_LIQUIDITY_NOTE || null);
 feed.setBoard(boardKind);
@@ -255,7 +265,9 @@ const owner = ownerApi({
     log(`${a.agentId}: mandate signed by its owner, hash ${sig.hash.slice(0, 12)}…, saved to ${file}`);
     anchorMandate(a).catch((err) => log(`${a.agentId}: anchor after signing failed: ${err.message.slice(0, 120)}`));
   },
-  onboarding: { create: (spec) => createAgent(spec), get: (id) => jobs.get(id)?.view() ?? null, retry: async (id) => { const j = jobs.get(id); j.retry().catch(() => {}); await new Promise((r) => setImmediate(r)); return j.view(); } },
+  onboarding: { create: (spec) => createAgent(spec), get: (id) => jobs.get(id)?.view() ?? null, retry: async (id) => { const j = jobs.get(id); j.retry().catch(() => {}); await new Promise((r) => setImmediate(r)); return j.view(); }, cancel: (id) => cancelOrder(id) },
+  // a name is taken by a built-in, a registered agent or a Strike account made for it, not only by one in the loop
+  nameTaken: (name) => name in all || Boolean(reg.get(name)) || Boolean(accounts.read()[name]),
   // the pricing, the payments, the payouts and the deposits are built a few lines down; the handlers only run once they exist
   pricing, payments: { build: (...x) => payments.build(...x), submit: (...x) => payments.submit(...x) },
   withdrawals: { start: (...x) => withdrawals.start(...x), list: (...x) => withdrawals.list(...x), retry: (...x) => withdrawals.retry(...x), room: (...x) => withdrawals.room(...x) },
@@ -337,14 +349,27 @@ async function createAgent({ agentId, mind, pay, depositLovelace, feeLovelace, t
   await new Promise((r) => setImmediate(r));
   return j.view();
 }
+/** An unpaid order taken back: the job ends cancelled, its card leaves the Arena, the name is free; its wallet index stays used. */
+async function cancelOrder(agentId) {
+  const j = jobs.get(agentId);
+  if (!j) throw Object.assign(new Error("no such order"), { status: 404 });
+  const job = await j.cancel();
+  jobs.delete(agentId);
+  if (!ids().includes(agentId)) feed.agentGone(agentId);
+  if (j.ctx.trader && !ids().includes(agentId)) await j.ctx.trader.close().catch(() => {});
+  log(`${agentId}: order cancelled by its owner`);
+  return j.view();
+}
 const payments = orderPayments({ jobOf: (id) => jobs.get(id) ?? null, chain, log: (e) => entries.append(e) });
 
 // payouts: one job per request, written to data/withdrawals/<agent>-<time>.json, the ones of this run kept in memory
 const WITHDRAW_DIR = path.join("data", "withdrawals");
 const withdrawJobs = new Map(); // agentId → jobs, newest last
+/** The money a payout takes off Strike, or a deposit puts on it, moves the day's loss-stop baseline with it. */
+const withBaseline = (steps, step, agentId, delta, why) => ({ ...steps, [step]: async (ctx, s) => { const r = await steps[step](ctx, s); g.adjustEquityStart(agentId, delta(ctx), why); return r; } });
 const withdrawJob = (a, usd, stamp, saved = null) => onboardJob({
   agentId: a.agentId, index: null, owner: a.mandate.owner, mind: null, kind: "withdraw", order: WITHDRAW_STEPS, spec: { usd }, saved,
-  steps: withdrawSteps({ agentId: a.agentId, wallet: agentWallet(cfg.master, a.agentId), owner: a.mandate.owner, strike: a.strike, chain, usd, log: (e) => entries.append(e) }),
+  steps: withBaseline(withdrawSteps({ agentId: a.agentId, wallet: agentWallet(cfg.master, a.agentId), owner: a.mandate.owner, strike: a.strike, chain, usd, log: (e) => entries.append(e) }), "confirm", a.agentId, (ctx) => -Number(ctx.data.quote?.usd ?? 0), "payout"),
   save: (job) => { fs.mkdirSync(WITHDRAW_DIR, { recursive: true }); fs.writeFileSync(path.join(WITHDRAW_DIR, `${a.agentId}-${stamp}.json`), JSON.stringify(job, null, 1), { mode: 0o600 }); },
   onChange: (job) => { if (job.status !== "running") log(`${a.agentId}: payout ${job.status}${job.error ? `: ${job.error}` : ""}`); },
 });
@@ -382,7 +407,7 @@ const ownStrike = (agentId) => { const o = accounts.read()[agentId]; if (!o) thr
 const depositPayments = orderPayments({ jobOf: (id) => (depositJobs.get(id) ?? []).findLast((j) => j.job.status !== "done") ?? null, chain, log: (e) => entries.append(e) });
 const depositJob = (a, lovelace, stamp, saved = null) => onboardJob({
   agentId: a.agentId, index: null, owner: a.mandate.owner, mind: null, kind: "deposit", order: TOPUP_STEPS, spec: { lovelace: String(lovelace) }, saved,
-  steps: topUpSteps({ agentId: a.agentId, wallet: agentWallet(cfg.master, a.agentId), owner: a.mandate.owner, lovelace, strike: ownStrike(a.agentId), chain, log: (e) => entries.append(e) }),
+  steps: withBaseline(topUpSteps({ agentId: a.agentId, wallet: agentWallet(cfg.master, a.agentId), owner: a.mandate.owner, lovelace, strike: ownStrike(a.agentId), chain, log: (e) => entries.append(e) }), "credit", a.agentId, (ctx) => { g.funded(a.agentId); return Number(ctx.data.pub?.creditedUsd ?? 0); }, "deposit"),
   save: (job) => { fs.mkdirSync(DEPOSIT_DIR, { recursive: true }); fs.writeFileSync(path.join(DEPOSIT_DIR, `${a.agentId}-${stamp}.json`), JSON.stringify(job, null, 1), { mode: 0o600 }); },
   onChange: (job) => { if (job.status !== "running") log(`${a.agentId}: deposit ${job.status}${job.error ? `: ${job.error}` : ""}`); },
 });
@@ -420,7 +445,7 @@ const deposits = {
   retry: (agentId) => { const j = (depositJobs.get(agentId) ?? []).at(-1); if (!j) throw Object.assign(new Error("no deposit to retry"), { status: 404 }); j.retry().catch(() => {}); return j.view(); },
 };
 // payouts and deposits of earlier runs, for their owners' lists and retries
-reloadJobs(WITHDRAW_DIR, withdrawJobs, (a, saved, stamp) => withdrawJob(a, Number(saved.spec.usd), stamp, saved));
+reloadJobs(WITHDRAW_DIR, withdrawJobs, (a, saved, stamp) => withdrawJob(a, saved.spec.usd === "all" ? "all" : Number(saved.spec.usd), stamp, saved));
 reloadJobs(DEPOSIT_DIR, depositJobs, (a, saved, stamp) => depositJob(a, BigInt(saved.spec.lovelace), stamp, saved));
 
 /** A fresh Strike API wallet for a running agent: builder connect again on its own Cardano wallet, the loop swapped onto the new key. */
@@ -447,7 +472,7 @@ if (fs.existsSync(ONBOARD_DIR)) {
   for (const f of fs.readdirSync(ONBOARD_DIR).filter((x) => x.endsWith(".json"))) {
     try {
       const saved = JSON.parse(fs.readFileSync(path.join(ONBOARD_DIR, f), "utf8"));
-      if (saved.status === "done") continue;
+      if (saved.status === "done" || saved.status === "cancelled") continue;
       const s = loadSignedMandate(saved.agentId, { owner: saved.owner });
       if (!s?.mandate) continue;
       if (!saved.spec) { log(`${saved.agentId}: an order from before orders had a spec; skipped`); continue; }
@@ -510,9 +535,11 @@ async function anchorMandate(a) {
     try {
       const id = await at.identity();
       const m = mandateEnvelope({ agentId: a.agentId, mandateHash: mandateHash(a.mandate) });
-      // the same mandate after a restart is on the vault already: the record is checked, not written again
-      const r = await at.attest({ ...m, label: "mandate" }).catch((err) => { if (/already attested/.test(err.message)) return { status: "succeeded", txHash: null, at: new Date().toISOString(), provingMs: 0, already: true }; throw err; });
-      if (!r.already) fs.writeFileSync(path.join(attestDir, `${a.agentId}-mandate.json`), JSON.stringify({ mandate: a.mandate, ...r }, null, 1));
+      // the same mandate after a restart is on the vault already: the record is checked, not written again, and its first anchor's hash is kept
+      const file = path.join(attestDir, `${a.agentId}-mandate.json`);
+      const earlier = () => { try { const p = JSON.parse(fs.readFileSync(file, "utf8")); return p.payloadHash === m.payloadHash ? p : null; } catch { return null; } };
+      const r = await at.attest({ ...m, label: "mandate" }).catch((err) => { if (/already attested/.test(err.message)) { const p = earlier(); return { status: "succeeded", txHash: p?.txHash ?? null, at: p?.at ?? new Date().toISOString(), provingMs: 0, already: true }; } throw err; });
+      if (!r.already) fs.writeFileSync(file, JSON.stringify({ mandate: a.mandate, ...r }, null, 1));
       const v = r.status === "succeeded" ? await at.verify({ payloadHash: m.payloadHash }).catch((err) => ({ verified: false, error: err.message })) : { verified: false };
       feed.proof(a.agentId, { attesterId: id.attesterId, vault: VAULT, mandate: { payloadHash: m.payloadHash, txHash: r.txHash, status: r.status, verified: v.verified, at: r.at } });
       log(`${a.agentId}: mandate ${r.already ? "already anchored" : "anchored"} on the vault: ${r.status}${r.txHash ? ` tx ${r.txHash.slice(0, 16)}…` : ""}, verified ${v.verified}${r.already ? "" : `, proving ${Math.round(r.provingMs / 1000)}s`}`);
@@ -585,12 +612,16 @@ async function refreshReconcile() {
   for (const a of agents) {
     if (!a.strike) continue;
     try {
-      // this run's hedges only: Strike keeps every fill ever, the log starts at run.start
+      // this run's hedges only, on every market the agent trades: Strike keeps every fill ever, the log starts at run.start
       const since = Date.parse(runStart.ts);
-      const fills = ((await a.strike.fills({ symbol: a.mandate.strike.markets[0], limit: 500 })).fills ?? []).filter((f) => typeof f.client_order_id === "string" && f.client_order_id.startsWith(`${a.agentId}-`) && Number(f.timestamp ?? 0) >= since);
+      const fills = [];
+      for (const symbol of a.mandate.strike.markets.length ? a.mandate.strike.markets : [a.market]) fills.push(...((await a.strike.fills({ symbol, limit: 500 })).fills ?? []).filter((f) => typeof f.client_order_id === "string" && f.client_order_id.startsWith(`${a.agentId}-`) && Number(f.timestamp ?? 0) >= since));
       const entries = all.filter((e) => e.agent === a.agentId);
       const carried = runStart.books[a.agentId] ?? {};
-      const r = reconcile({ entries, strikeFills: fills, mandate: a.mandate, startDeltaBtc: (carried.midnightInventoryBtc ?? 0) + (carried.strikePositionBtc ?? 0) });
+      // what each market carried into this run: the first market's books are the flat ones, every market's sit under legs
+      const legs = carried.legs ?? {};
+      const startDeltaBtc = Object.fromEntries((a.markets ?? [a.market]).map((sym, i) => { const b = legs[sym] ?? (i === 0 ? carried : {}); return [sym, (b.midnightInventoryBtc ?? 0) + (b.strikePositionBtc ?? 0)]; }));
+      const r = reconcile({ entries, strikeFills: fills, mandate: a.mandate, startDeltaBtc });
       report.agents[a.agentId] = { ok: r.ok, counts: r.counts, claims: r.claims, violations: r.violations, maxLatencyMs: r.maxLatencyMs };
       lastReconcile.set(a.agentId, { asOf: report.asOf, claims: r.claims, counts: r.counts });
       feed.proof(a.agentId, { reconciled: report.asOf, claims: r.claims, violations: r.violations, counts: r.counts, logChain: chain.ok ? `${chain.entries} entries this run, chain intact` : `broken at ${chain.brokenAt}` });

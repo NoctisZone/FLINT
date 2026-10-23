@@ -77,6 +77,25 @@ test("a maker on BTC-USD and ADA-USD quotes both pairs at their own marks and he
   await g.stop();
 });
 
+test("a market without a mark this round leaves the agent's equity and the loss stop's baseline as they were", async () => {
+  const strike = { placeOrder: async () => ({ status: "pending" }), balances: async () => [{ marginBalance: "300" }], positions: async () => ({ positions: [] }) };
+  const holdings = { "tBTC/tUSD": { btc: 0.01, usd: 800, spendable: { btc: 0.004, usd: 320 } }, "tADA/tUSD": { btc: 2000, usd: 800, spendable: { btc: 900, usd: 320 } } };
+  const a = { agentId: "duo", mandate: two, mind: "maker", venue: venue("duo", holdings), strike, rules: { "BTC-USD": { step: 0.00001, tick: 0.1, minNotionalUsd: 100 }, "ADA-USD": { step: 1, tick: 0.0001, minNotionalUsd: 5 } }, stream: () => ({ close() {} }) };
+  const feed = feedState({ runStart: "2026-10-22T12:00:00Z" });
+  let marks = { "BTC-USD": { mark: 80_000, funding: 0 }, "ADA-USD": { mark: 0.4, funding: 0 } };
+  const log = [];
+  const g = gateway({ agents: [a], mark: async () => ({ markets: marks }), feed, log: (e) => { log.push(e); return e; }, now: () => T0, rnd: () => 0 });
+  await g.round();
+  const card = () => feed.get("agents").agents.find((x) => x.agentId === "duo");
+  const first = card().equityUsd;
+  assert.ok(first > 0);
+  marks = { "BTC-USD": { mark: 80_000, funding: 0 } };
+  await g.round();
+  assert.deepEqual([card().equityUsd, card().equityStartUsd], [first, first], "ADA without a mark: no reading, not one at BTC's mark");
+  assert.ok(log.some((e) => e.kind === "no.mark" && e.symbol === "ADA-USD"));
+  await g.stop();
+});
+
 test("a citizen taking an ADA quote is checked at ADA's mark, not BTC's", async () => {
   const taken = [];
   const ada = { quoteId: "o-ada", pair: "tADA/tUSD", side: "ask", sizeBtc: 564, price: 0.2132, maker: "t-ada1", expiresAt: new Date(T0 + 200_000).toISOString(), offer: "x" };

@@ -9,9 +9,9 @@
  *   npm run owner -- agents
  *   npm run owner -- pause mm-rule | resume mm-rule | stop mm-rule | close mm-rule
  *   npm run owner -- sign mm-rule risk.maxNetDeltaUsd=120 midnight.maxQuoteUsd=140
- *   npm run owner -- create nova-7 [rules|claude] [x402] [deposit=850] [path=value ...]   # order a new agent: the mm-rule mandate shape, signed; the fee by x402 or by `pay`
+ *   npm run owner -- create nova-7 [rules|claude] [x402] [deposit=850] [path=value ...]   # order a new agent: the mm-rule mandate shape, signed; the fee by x402 or by `pay`; a list value is JSON: strike.markets=["SOL-USD"] midnight.pairs=["tSOL/tUSD"]
  *   npm run owner -- pay nova-7                 # the order's payment (fee and deposit money), signed by this wallet from its own tADA
- *   npm run owner -- onboarding nova-7 | retry nova-7
+ *   npm run owner -- onboarding nova-7 | retry nova-7 | cancel-order nova-7   # cancel takes an unpaid order back; the name is free again
  *   npm run owner -- key nova-7 | revoke-key nova-7   # a tools key for the agent (shown once), or none
  *   npm run owner -- withdraw nova-7 <usd|all> | withdrawals nova-7 | retry-withdraw nova-7   # a payout to this wallet, capped by Strike's limits
  *   npm run owner -- deposit nova-7 <ada> | deposits nova-7 | retry-deposit nova-7   # more money into a running agent, from this wallet's tADA
@@ -79,7 +79,8 @@ else if (["pause", "resume", "stop", "unwind", "close"].includes(cmd)) {
     const [path, raw] = kv.split("=");
     const keys = path.split("."); const last = keys.pop();
     const o = keys.reduce((x, k) => (x[k] ??= {}), m);
-    o[last] = raw === "block" || raw === "freeze" || Number.isNaN(Number(raw)) ? raw : Number(raw);
+    // a list such as strike.markets=["SOL-USD"] is JSON; a word stays a word, a number becomes one
+    o[last] = raw.startsWith("[") ? JSON.parse(raw) : raw === "block" || raw === "freeze" || Number.isNaN(Number(raw)) ? raw : Number(raw);
   }
   if (Date.parse(m.expiry) - Date.now() < 86_400_000) m.expiry = new Date(Date.now() + 3 * 86_400_000).toISOString();
   const hash = mandateHash(m);
@@ -121,8 +122,8 @@ else if (["pause", "resume", "stop", "unwind", "close"].includes(cmd)) {
 } else if (cmd === "key" || cmd === "revoke-key") {
   if (!rest[0]) { console.error(`${cmd} needs an agent id`); process.exit(2); }
   console.log(JSON.stringify(cmd === "key" ? await call(`agents/${rest[0]}/key`, "POST", {}, { paid: true }) : await call(`agents/${rest[0]}/key`, "DELETE"), null, 1));
-} else if (cmd === "onboarding" || cmd === "retry") {
+} else if (cmd === "onboarding" || cmd === "retry" || cmd === "cancel-order") {
   if (!rest[0]) { console.error(`${cmd} needs an agent id`); process.exit(2); }
-  console.log(JSON.stringify(cmd === "retry" ? await call(`agents/${rest[0]}/onboarding/retry`, "POST", {}) : await call(`agents/${rest[0]}/onboarding`), null, 1));
+  console.log(JSON.stringify(cmd === "retry" ? await call(`agents/${rest[0]}/onboarding/retry`, "POST", {}) : cmd === "cancel-order" ? await call(`agents/${rest[0]}/onboarding/cancel`, "POST", {}) : await call(`agents/${rest[0]}/onboarding`), null, 1));
 } else { console.error(`unknown command ${cmd}`); process.exit(2); }
 await call("session", "DELETE").catch(() => {});
