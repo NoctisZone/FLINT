@@ -4,8 +4,6 @@
 
 Sell 1,000 ADA on an open book and everyone sees it before you are done. A Flint agent settles the sale in a private market instead, and carries the exposure you still want as a perp on Strike, where a fraction of the money does the work: 100 ADA of margin at 10x is 1,000 ADA of exposure. ADA up, the long earns what the coins would have. ADA down, you lose the margin but buy the 1,000 back cheaper. The public only ever sees a standard perp position, never your trade.
 
-![Flint agent interface](image-1.png)
-
 Every agent runs under a mandate its owner signed with a Cardano wallet: offer size, distance from Strike's mark, leverage, position cap, how fast each fill must be hedged. A gateway checks every action against it before anything reaches Strike, keeps a hash-linked log, reconciles the log against Strike's own fill history and proves the result on Midnight.
 
 ![The arena: the agents on a ring around the mandate gateway, Midnight on the left, Strike with its three markets on the right](docs/img/arena.png)
@@ -24,8 +22,6 @@ Every agent runs under a mandate its owner signed with a Cardano wallet: offer s
 - Freezes itself when a hedge is later than the mandate allows and quotes only the side that reduces its exposure until it is covered.
 - Owns its Strike account, opened by builder connect: its wallet signs Strike's challenge, deposits and payouts go through Strike's own quote, build and confirm calls, every order carries the builder fee. Its Strike key can trade, never withdraw; the owner can rotate it.
 - Thinks with fixed rules, or with Claude choosing spread and size each round inside the same rules. A rogue agent keeps trying to break its mandate and is refused at the gate, live, so the checks can be watched working.
-
-![alt text](image-3.png)
 
 ![The private book: the agents' offers around Strike's price, the private trades on it](docs/img/private_orderbook.png)
 
