@@ -202,16 +202,17 @@ const assetList = (ma) => { const out = []; if (ma instanceof Map) for (const [p
 
 /**
  * A CIP-30 `TransactionUnspentOutput` (hex) as Koios shapes it: `assets` lists
- * the tokens on it, `script` says a reference script or datum sits on it.
+ * the tokens on it, `refScriptSize` the bytes of a reference script on it.
  */
 export function decodeUtxoHex(hex) {
   const [[hash, index], out] = cborDecode(Buffer.from(hex, "hex")).value;
   // a Babbage output is a map {0 address, 1 amount, 2 datum, 3 script}; the older shape is [address, amount, datum hash?]
   const address = out instanceof Map ? out.get(0n) : out[0];
   const amount = out instanceof Map ? out.get(1n) : out[1];
-  const script = out instanceof Map ? out.has(2n) || out.has(3n) : out.length > 2;
+  // the reference script's tag payload: its type and bytes, a few bytes over what the fee counts
+  const ref = out instanceof Map ? out.get(3n) : undefined;
   const coin = Array.isArray(amount) ? amount[0] : amount;
-  return { tx_hash: hexOf(hash), tx_index: Number(index), value: String(coin), address: bech32.encode((address[0] & 0x0f) === 1 ? "addr" : "addr_test", bech32.toWords(Uint8Array.from(address)), 200), assets: Array.isArray(amount) ? assetList(amount[1]) : [], script };
+  return { tx_hash: hexOf(hash), tx_index: Number(index), value: String(coin), address: bech32.encode((address[0] & 0x0f) === 1 ? "addr" : "addr_test", bech32.toWords(Uint8Array.from(address)), 200), assets: Array.isArray(amount) ? assetList(amount[1]) : [], script: false, refScriptSize: ref ? ref.value.length : 0 };
 }
 
 // the fee is linear in the transaction's size; an output carries ADA per byte of its own size
@@ -220,6 +221,18 @@ const FEE_FIXED = 155_381n, FEE_PER_BYTE = 44n, LOVELACE_PER_UTXO_BYTE = 4_310n,
 export const MIN_OUTPUT_LOVELACE = 1_200_000n;
 const coinOf = (u) => BigInt(u.value);
 const hasTokens = (u) => Boolean(u.assets?.length);
+const refBytes = (u) => u.refScriptSize ?? 0;
+/** Preprod's `minFeeRefScriptCostPerByte`; ODATANO's GetLedgerProtocolParameters gives the current one. */
+export const REF_SCRIPT_COST_PER_BYTE = 15;
+// Conway's limit on the reference script bytes one transaction may spend
+const MAX_REF_SCRIPT_BYTES = 204_800;
+
+/** Conway's fee for the reference scripts a transaction spends: per byte, 1.2 times dearer every 25,600 bytes. */
+export function refScriptFee(bytes, perByte = REF_SCRIPT_COST_PER_BYTE) {
+  let fee = 0, price = perByte;
+  for (let left = bytes; left > 0; left -= 25_600) { fee += Math.min(left, 25_600) * price; price *= 1.2; }
+  return BigInt(Math.ceil(fee));
+}
 const adaOf = (n) => String(Number(n) / 1e6);
 /** The tokens on the picked coins as one multi-asset map for the change output. */
 const tokensOf = (picked) => {
@@ -232,38 +245,41 @@ const tokensOf = (picked) => {
  * A plain ADA transfer from `from` as unsigned CBOR: one output (`to`,
  * `lovelace`) or several (`outputs: [{ to, lovelace }]`), the fee from the
  * transaction's size (or `feeLovelace` when given) and the change back to
- * `from`; no TTL, no metadata. `utxos` as Koios returns them, with `assets`
- * and `script`: a coin with a reference script or datum stays out, since
- * spending it raises the fee by the script's size; tokens on a spent coin come
+ * `from`; no TTL, no metadata. `utxos` as Koios returns them, with `assets`,
+ * `refScriptSize` and `script`: a coin flagged `script` stays out, one with a
+ * reference script adds Conway's fee for its bytes; tokens on a spent coin come
  * back in the change. Signed by the sender's wallet or by a CIP-30 `signTx`.
  */
-export function buildUnsignedTransfer({ from, utxos, to, lovelace, outputs: given, feeLovelace = null, witnesses = 1 }) {
+export function buildUnsignedTransfer({ from, utxos, to, lovelace, outputs: given, feeLovelace = null, witnesses = 1, refScriptCostPerByte = REF_SCRIPT_COST_PER_BYTE }) {
   const fromBytes = typeof from === "string" ? addressBytesOf(from) : from;
   const outs = (given ?? [{ to, lovelace }]).map((o) => [addressBytesOf(o.to), BigInt(o.lovelace)]);
   const want = outs.reduce((s, o) => s + o[1], 0n);
   const spendable = utxos.filter((u) => !u.script);
-  // plain coins first, largest first; coins with tokens only when the plain ones do not reach
-  const rest = [...spendable].sort((a, b) => Number(hasTokens(a)) - Number(hasTokens(b)) || (coinOf(b) > coinOf(a) ? 1 : -1));
+  // plain coins first, largest first; then coins with tokens; a reference script last, since spending it ends that deployment
+  const rest = [...spendable].sort((a, b) => Number(refBytes(a) > 0) - Number(refBytes(b) > 0) || Number(hasTokens(a)) - Number(hasTokens(b)) || (coinOf(b) > coinOf(a) ? 1 : -1));
   const total = spendable.reduce((s, u) => s + coinOf(u), 0n);
   const onScripts = utxos.filter((u) => u.script).reduce((s, u) => s + coinOf(u), 0n);
-  const short = (need) => Object.assign(new Error(`not enough ADA: ${adaOf(total)} spendable on the wallet, ${adaOf(need)} needed${onScripts > 0n ? ` (${adaOf(onScripts)} more sits on coins that carry a script or datum and stay out)` : ""}`), { spendable: total, needed: need, onScripts });
+  let capped = 0n;
+  const short = (need) => Object.assign(new Error(`not enough ADA: ${adaOf(total - capped)} spendable in one transaction, ${adaOf(need)} needed${capped > 0n ? ` (${adaOf(capped)} more sits on coins past the 200 KiB of reference scripts one transaction may spend)` : ""}${onScripts > 0n ? ` (${adaOf(onScripts)} more sits on coins this payment cannot spend: a script address, or a reference script of unknown size)` : ""}`), { spendable: total - capped, needed: need, onScripts, capped });
   const picked = [];
   let sum = 0n;
   let fee = feeLovelace ?? FEE_FIXED;
+  let scriptBytes = 0;
+  const take = () => { const i = rest.findIndex((u) => scriptBytes + refBytes(u) <= MAX_REF_SCRIPT_BYTES); if (i < 0) { capped = rest.reduce((s, x) => s + coinOf(x), 0n); rest.length = 0; return; } const [u] = rest.splice(i, 1); picked.push(u); sum += coinOf(u); scriptBytes += refBytes(u); };
   for (;;) {
-    while (sum < want + fee && rest.length) { const u = rest.shift(); picked.push(u); sum += coinOf(u); }
+    while (sum < want + fee && rest.length) take();
     if (sum < want + fee) throw short(want + fee);
     const tokens = tokensOf(picked);
     let change = sum - want - fee;
     const changeOut = tokens.size ? [fromBytes, [change, tokens]] : [fromBytes, change];
     const minChange = tokens.size ? LOVELACE_PER_UTXO_BYTE * BigInt(160 + cborEncode(changeOut).length) : MIN_OUTPUT_LOVELACE;
     // change under what an output must carry: another coin makes it bigger; plain change that small may go into the fee
-    if (change > 0n && change < minChange && rest.length) { const u = rest.shift(); picked.push(u); sum += coinOf(u); continue; }
+    if (change > 0n && change < minChange && rest.length) { take(); continue; }
     if (tokens.size && change < minChange) throw short(want + fee + minChange);
     const outputs = [...outs];
     if (tokens.size || change >= minChange) outputs.push(changeOut); else { fee += change; change = 0n; }
     const bodyRaw = cborEncode(new Map([[0n, picked.map((u) => [Buffer.from(u.tx_hash, "hex"), BigInt(u.tx_index)])], [1n, outputs], [2n, fee]]));
-    const least = feeLovelace ?? FEE_FIXED + FEE_PER_BYTE * BigInt(bodyRaw.length + 8 + witnesses * WITNESS_BYTES);
+    const least = feeLovelace ?? FEE_FIXED + FEE_PER_BYTE * BigInt(bodyRaw.length + 8 + witnesses * WITNESS_BYTES) + refScriptFee(scriptBytes, refScriptCostPerByte);
     if (fee < least) { fee = least; continue; }
     const cborHex = Buffer.concat([Buffer.from([0x84]), Buffer.from(bodyRaw), Buffer.from(cborEncode(new Map())), Buffer.from([0xf5, 0xf6])]).toString("hex");
     return { cborHex, txHash: txHashOf(bodyRaw), inputs: picked.length, change, fee };
@@ -279,13 +295,13 @@ export function buildTransfer({ wallet, utxos, to, lovelace, feeLovelace = null 
   return { ...signTransaction(u.cborHex, wallet), inputs: u.inputs, change: u.change, fee: u.fee };
 }
 
-/** The wallet's coins with what the chain knows of them: a script or tokens the wallet's hex left out. Matched by tx hash and index. */
+/** The wallet's coins with what the chain knows of them: a reference script or tokens the wallet's hex left out. Matched by tx hash and index. */
 export function withChainFlags(utxos, chain) {
   const m = new Map(chain.map((u) => [`${u.tx_hash}#${u.tx_index}`, u]));
-  return utxos.map((u) => { const c = m.get(`${u.tx_hash}#${u.tx_index}`); return c ? { ...u, script: Boolean(u.script || c.script), assets: u.assets?.length ? u.assets : c.assets ?? [] } : u; });
+  return utxos.map((u) => { const c = m.get(`${u.tx_hash}#${u.tx_index}`); return c ? { ...u, script: Boolean(u.script || c.script), refScriptSize: Math.max(refBytes(u), refBytes(c)), assets: u.assets?.length ? u.assets : c.assets ?? [] } : u; });
 }
 
-/** What a transfer can spend of these coins: plain and token coins; what sits on coins with a script or datum stays out. */
+/** What a transfer can spend of these coins: plain, token and reference-script coins; coins flagged `script` stay out. */
 export function spendableOf(utxos) {
   const sum = (l) => l.reduce((s, u) => s + BigInt(u.value), 0n);
   const scripts = utxos.filter((u) => u.script), tokens = utxos.filter((u) => !u.script && u.assets?.length);
@@ -302,13 +318,14 @@ export function utxoHex(u, addressBytes) {
 export function koios({ baseUrl = KOIOS_PREPROD, fetch = globalThis.fetch } = {}) {
   const headers = { "content-type": "application/json", accept: "application/json", "user-agent": "flint/0.1" };
   return {
-    /** UTxOs of an address: [{ tx_hash, tx_index, value, assets, script }] (value in lovelace, as a string; tokens and scripts as decodeUtxoHex gives them). */
+    /** UTxOs of an address: [{ tx_hash, tx_index, value, assets, script, refScriptSize }] (value in lovelace, as a string; tokens and scripts as decodeUtxoHex gives them). */
     async utxos(address) {
       const res = await fetch(`${baseUrl}/address_utxos`, { method: "POST", headers, body: JSON.stringify({ _addresses: [address], _extended: true }), signal: AbortSignal.timeout(25_000) });
       if (!res.ok) throw new Error(`koios ${res.status}`);
-      return (await res.json()).map((u) => ({ tx_hash: u.tx_hash, tx_index: u.tx_index, value: String(u.value), assets: (u.asset_list ?? []).map((a) => ({ policy: a.policy_id, name: a.asset_name ?? "", quantity: String(a.quantity) })), script: Boolean(u.reference_script || u.inline_datum || u.datum_hash) }));
+      // a reference script without a size cannot be priced: that coin stays out
+      return (await res.json()).map((u) => ({ tx_hash: u.tx_hash, tx_index: u.tx_index, value: String(u.value), assets: (u.asset_list ?? []).map((a) => ({ policy: a.policy_id, name: a.asset_name ?? "", quantity: String(a.quantity) })), script: Boolean(u.reference_script && !(u.reference_script.size >= 0)), refScriptSize: Number(u.reference_script?.size ?? 0), datum: Boolean(u.inline_datum || u.datum_hash) }));
     },
-    /** The ADA a transfer can spend: every coin without a script or datum. */
+    /** The ADA a transfer can spend: every coin not flagged `script`. */
     async balance(address) {
       return (await this.utxos(address)).filter((u) => !u.script).reduce((s, u) => s + BigInt(u.value), 0n);
     },

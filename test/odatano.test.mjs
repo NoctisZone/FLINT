@@ -24,7 +24,7 @@ test("utxos come back in the Koios shape, a transfer is built server-side, submi
   });
   const o = odatano({ key: "oda_test", fetch: g.fetch });
   const u = await o.utxos("addr_test1vq");
-  assert.deepEqual(u, [{ tx_hash: "ab".repeat(32), tx_index: 1, value: "6399200000", assets: [], script: false }], "the UTxO with a native asset is left out");
+  assert.deepEqual(u, [{ tx_hash: "ab".repeat(32), tx_index: 1, value: "6399200000", assets: [], script: false, refScriptSize: 0, datum: false }], "the UTxO with a native asset is left out");
   assert.equal(await o.balance("addr_test1vq"), 6_399_200_000n);
   assert.equal(g.calls[0].auth, "Bearer oda_test");
   assert.match(g.calls[0].path, /LedgerUTxOs\?\$filter=address eq 'addr_test1vq' and spentTxHash eq null/);
@@ -37,4 +37,22 @@ test("utxos come back in the Koios shape, a transfer is built server-side, submi
   assert.equal(t.length, 1);
   assert.deepEqual([t[0].tx_hash, t[0].block_height], ["22".repeat(32), 5319302]);
   assert.throws(() => odatano({}), /oda_ key/);
+});
+
+test("a reference script comes with its size, a script address stays out, the fee parameters carry the cost per byte", async () => {
+  const g = gateway((path) => {
+    if (path.startsWith("/odata/v4/cardano/LedgerUTxOs")) return { body: { value: [
+      { txHash: "aa".repeat(32), outputIndex: 0, lovelace: "20537150", utxo_referenceScriptHash: "ff".repeat(28), utxo_referenceScriptSize: 4552, utxo_referenceScriptType: "plutusV3" },
+      { txHash: "bb".repeat(32), outputIndex: 0, lovelace: "63503540", isScript: true },
+      { txHash: "cc".repeat(32), outputIndex: 1, lovelace: "9000000", utxo_referenceScriptHash: "ee".repeat(28) },
+    ] } };
+    if (path.endsWith("/GetLedgerProtocolParameters")) return { body: { epoch: 321, minFeeA: 44, minFeeB: 155381, coinsPerUtxoSize: "4310", minFeeRefScriptCostPerByte: 15 } };
+    return { status: 404, body: {} };
+  });
+  const o = odatano({ key: "oda_test", fetch: g.fetch });
+  const u = await o.utxos("addr_test1vq");
+  assert.deepEqual(u.map((x) => [x.tx_hash.slice(0, 2), x.script, x.refScriptSize]), [["aa", false, 4552], ["bb", true, 0], ["cc", true, 0]], "a script without its size cannot be priced");
+  assert.equal(await o.balance("addr_test1vq"), 20_537_150n);
+  assert.deepEqual(await o.feeParams(), { epoch: 321, minFeeA: 44, minFeeB: 155381, coinsPerUtxoSize: 4310, refScriptCostPerByte: 15 });
+  assert.equal(g.calls.at(-1).method, "POST");
 });

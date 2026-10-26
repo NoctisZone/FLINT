@@ -1,6 +1,6 @@
 /**
  * Cardano through the ODATANO gateway with an `oda_` key that has the
- * odatano product: UTxOs of an address, a simple ADA transaction built
+ * odatano product: UTxOs of an address, the fee parameters, a simple ADA transaction built
  * server-side, a signed transaction submitted, a transaction looked up. The
  * same shape as the Koios client in cardano.mjs, so either serves the
  * onboarding; the gateway is the one that meters every call on the key.
@@ -27,13 +27,19 @@ export function odatano({ baseUrl = ODATANO_PREPROD, key, network = "preprod", f
   }
   return {
     kind: "odatano",
-    /** Unspent ADA-only outputs of an address, in the Koios shape: [{ tx_hash, tx_index, value, assets: [], script }]. */
+    /** Unspent ADA-only outputs of an address, in the Koios shape: [{ tx_hash, tx_index, value, assets: [], script, refScriptSize }]. */
     async utxos(address) {
       const { value = [] } = await get(`/odata/v4/cardano/LedgerUTxOs?$filter=address eq '${address}' and spentTxHash eq null`);
-      // token coins stay out: the view says that they carry tokens, not which; a reference script is not in this view, so the payment asks Koios for it
-      return value.filter((u) => !u.hasAssets).map((u) => ({ tx_hash: u.txHash, tx_index: Number(u.outputIndex), value: String(u.lovelace ?? 0), assets: [], script: Boolean(u.isScript || u.utxo_referenceScriptHash || u.utxo_inlineDatum || u.utxo_dataHash) }));
+      // token coins stay out: the view says that they carry tokens, not which; a script address or a reference script without a size cannot be spent here
+      return value.filter((u) => !u.hasAssets).map((u) => ({ tx_hash: u.txHash, tx_index: Number(u.outputIndex), value: String(u.lovelace ?? 0), assets: [], script: Boolean(u.isScript || (u.utxo_referenceScriptHash && u.utxo_referenceScriptSize == null)), refScriptSize: Number(u.utxo_referenceScriptSize ?? 0), datum: Boolean(u.utxo_inlineDatum || u.utxo_dataHash) }));
     },
-    /** The ADA a transfer can spend: every coin without a script or datum. */
+    /** The current fee parameters: `refScriptCostPerByte` is Conway's `minFeeRefScriptCostPerByte`. */
+    async feeParams() {
+      const p = await action("cardano", "GetLedgerProtocolParameters", {});
+      const v = typeof p.value === "string" ? JSON.parse(p.value) : p.value ?? p;
+      return { epoch: v.epoch, minFeeA: Number(v.minFeeA), minFeeB: Number(v.minFeeB), coinsPerUtxoSize: Number(v.coinsPerUtxoSize), refScriptCostPerByte: v.minFeeRefScriptCostPerByte == null ? null : Number(v.minFeeRefScriptCostPerByte) };
+    },
+    /** The ADA a transfer can spend: every coin not flagged `script`. */
     async balance(address) {
       return (await this.utxos(address)).filter((u) => !u.script).reduce((s, u) => s + BigInt(u.value), 0n);
     },

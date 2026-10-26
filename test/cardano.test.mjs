@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import { addressBytesOf, buildTransfer, buildUnsignedTransfer, cardanoWallet, cborDecode, cborEncode, decodeUtxoHex, signData, signTransaction, txHashOf, utxoHex, verifySignData, withChainFlags, withWitnesses } from "../gateway/cardano.mjs";
+import { addressBytesOf, buildTransfer, buildUnsignedTransfer, cardanoWallet, cborDecode, cborEncode, decodeUtxoHex, refScriptFee, signData, signTransaction, txHashOf, utxoHex, verifySignData, withChainFlags, withWitnesses } from "../gateway/cardano.mjs";
 
 const hex = (u8) => Buffer.from(u8).toString("hex");
 
@@ -97,7 +97,7 @@ test("a transfer picks the largest UTxOs, pays the fee its size asks, sends the 
   assert.deepEqual([t2.inputs, t2.change], [1, 2_000_000n - t2.fee], "change at or over the smallest output stands by itself");
   const t3 = buildTransfer({ wallet: w, utxos, to, lovelace: 7_000_000n, feeLovelace: 200_000n });
   assert.deepEqual([t3.fee, t3.change], [200_000n, 1_800_000n], "a given fee is taken as it is");
-  assert.throws(() => buildTransfer({ wallet: w, utxos, to, lovelace: 12_000_000n }), /not enough ADA: 12 spendable on the wallet, 12\.\d+ needed/);
+  assert.throws(() => buildTransfer({ wallet: w, utxos, to, lovelace: 12_000_000n }), /not enough ADA: 12 spendable in one transaction, 12\.\d+ needed/);
   const u = utxoHex(utxos[0], w.addressBytes);
   assert.deepEqual(cborDecode(Buffer.from(u, "hex")).value[0][1], 0n);
 });
@@ -127,13 +127,13 @@ test("a witness set from a wallet joins an unsigned transaction; a CIP-30 UTxO d
   assert.deepEqual([merged.cborHex, merged.txHash], [signed.cborHex, u.txHash], "merging the wallet's witnesses gives the same signed transaction");
   assert.throws(() => withWitnesses(u.cborHex, "80"), /not a witness set/);
   const hex = utxoHex({ tx_hash: "ab".repeat(32), tx_index: 3, value: "1234567" }, w.addressBytes);
-  assert.deepEqual(decodeUtxoHex(hex), { tx_hash: "ab".repeat(32), tx_index: 3, value: "1234567", address: w.address, assets: [], script: false });
+  assert.deepEqual(decodeUtxoHex(hex), { tx_hash: "ab".repeat(32), tx_index: 3, value: "1234567", address: w.address, assets: [], script: false, refScriptSize: 0 });
   const policy = Buffer.from("cd".repeat(28), "hex"), name = Buffer.from("JINX");
   const withAssets = Buffer.from(cborEncode([[Buffer.from("ab".repeat(32), "hex"), 0n], [w.addressBytes, [2_000_000n, new Map([[policy, new Map([[name, 80_000n]])]])]]])).toString("hex");
   assert.deepEqual([decodeUtxoHex(withAssets).value, decodeUtxoHex(withAssets).assets], ["2000000", [{ policy: "cd".repeat(28), name: Buffer.from("JINX").toString("hex"), quantity: "80000" }]]);
   // a Babbage output as a map, with a reference script on it
   const withScript = Buffer.from(cborEncode([[Buffer.from("ab".repeat(32), "hex"), 1n], new Map([[0n, w.addressBytes], [1n, 73_000_000n], [3n, { tag: 24n, value: Buffer.from("8203...", "utf8") }]])])).toString("hex");
-  assert.deepEqual([decodeUtxoHex(withScript).value, decodeUtxoHex(withScript).assets, decodeUtxoHex(withScript).script], ["73000000", [], true]);
+  assert.deepEqual([decodeUtxoHex(withScript).value, decodeUtxoHex(withScript).assets, decodeUtxoHex(withScript).script, decodeUtxoHex(withScript).refScriptSize], ["73000000", [], false, 7], "a reference script is priced by its bytes, not left out");
 });
 
 test("a transfer leaves coins with scripts out, spends token coins last and sends their tokens back in the change", () => {
@@ -161,7 +161,7 @@ test("a transfer leaves coins with scripts out, spends token coins last and send
   assert.ok(t2.fee > 155_381n + 44n * BigInt(t2.cborHex.length / 2 + 102), "two witnesses are paid for");
   // more than the spendable coins hold: the message names what is spendable and what sits on scripts
   let err; try { buildUnsignedTransfer({ from: w.address, utxos, to, lovelace: 2_045_000_000n }); } catch (e) { err = e; }
-  assert.match(err.message, /not enough ADA: 2040 spendable on the wallet, 2045\.\d+ needed \(73 more sits on coins that carry a script or datum and stay out\)/);
+  assert.match(err.message, /not enough ADA: 2040 spendable in one transaction, 2045\.\d+ needed \(73 more sits on coins this payment cannot spend: a script address, or a reference script of unknown size\)/);
   assert.deepEqual([err.spendable, err.onScripts], [2_040_000_000n, 73_000_000n]);
   // the wallet's hex said nothing of the script; the chain's view of the coin does
   const blind = utxos.map((u) => ({ ...u, script: false, assets: [] }));
@@ -181,4 +181,26 @@ test("an unsigned transfer with several outputs: fee, two outputs, the change la
   assert.deepEqual(body.get(1n).map((o) => o[1]), [5_000_000n, 20_000_000n, 30_000_000n - 25_000_000n - u.fee]);
   assert.deepEqual([u.inputs, u.change], [1, 5_000_000n - u.fee], "the largest UTxO alone covers it");
   assert.throws(() => buildUnsignedTransfer({ from: w.address, utxos, outputs: [{ to: a, lovelace: 45_000_000n }] }), /not enough ADA/);
+});
+
+test("coins with a reference script are spent last and pay Conway's fee for their bytes, at most 200 KiB of them", () => {
+  const w = cardanoWallet("55".repeat(32));
+  const to = cardanoWallet("66".repeat(32)).address;
+  assert.deepEqual([refScriptFee(0), refScriptFee(14_521), refScriptFee(25_600 + 1_000)], [0n, 217_815n, 384_000n + 18_000n], "15 a byte, 18 past the first 25,600");
+  const utxos = [
+    { tx_hash: "aa".repeat(32), tx_index: 0, value: "100000000", assets: [], script: false, refScriptSize: 14_521 },
+    { tx_hash: "ab".repeat(32), tx_index: 0, value: "50000000", assets: [], script: false, refScriptSize: 0 },
+  ];
+  const plain = buildUnsignedTransfer({ from: w.address, utxos, to, lovelace: 40_000_000n });
+  assert.deepEqual([plain.inputs, hex(cborDecode(Buffer.from(plain.cborHex, "hex")).value[0].get(0n)[0][0])], [1, "ab".repeat(32)], "the plain coin first: the deployed script stays");
+  const both = buildUnsignedTransfer({ from: w.address, utxos, to, lovelace: 120_000_000n });
+  assert.equal(both.inputs, 2);
+  assert.ok(both.fee >= 155_381n + 217_815n + 44n * BigInt(both.cborHex.length / 2), "the reference script's bytes are in the fee");
+  assert.ok(buildUnsignedTransfer({ from: w.address, utxos, to, lovelace: 120_000_000n, refScriptCostPerByte: 30 }).fee > both.fee, "the current cost per byte is used when given");
+  // past 204,800 reference script bytes a transaction is refused: the second big coin stays out
+  const big = [0, 1].map((i) => ({ tx_hash: String(i).repeat(64), tx_index: 0, value: "100000000", assets: [], script: false, refScriptSize: 150_000 }));
+  assert.throws(() => buildUnsignedTransfer({ from: w.address, utxos: big, to, lovelace: 150_000_000n }), /not enough ADA: 100 spendable in one transaction, 150\.\d+ needed \(100 more sits on coins past the 200 KiB/);
+  // the chain knows a script the wallet's hex left out
+  const flagged = withChainFlags([{ ...utxos[0], refScriptSize: 0 }], utxos);
+  assert.equal(flagged[0].refScriptSize, 14_521);
 });

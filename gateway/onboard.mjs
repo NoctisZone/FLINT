@@ -355,9 +355,9 @@ export function topUpSteps({ agentId, wallet, owner, lovelace, strike, chain, wa
  * @param {object} o
  * @param {(agentId) => object|null} o.jobOf       the running job (deliver, job.data): an order, or a deposit
  * @param {object} o.chain                          Koios or ODATANO client
- * @param {(address) => Promise<object[]>} [o.lookup]  the chain's view of an address's coins, with scripts and tokens; Koios by default
+ * @param {(address) => Promise<object[]>} [o.lookup]  the chain's view of an address's coins, with reference script sizes; ODATANO when it is the chain, else Koios
  */
-export function orderPayments({ jobOf, chain, lookup = (address) => koios().utxos(address), log = () => {} }) {
+export function orderPayments({ jobOf, chain, lookup = (address) => (chain.kind === "odatano" ? chain : koios()).utxos(address), log = () => {} }) {
   const need = (agentId) => { const j = jobOf(agentId); if (!j) throw Object.assign(new Error("nothing to pay under that name"), { status: 404 }); return j; };
   // a wallet's hex may leave a coin's reference script out; the chain's view of the address says what sits on each coin
   const utxosOf = async (owner, given) => {
@@ -372,7 +372,7 @@ export function orderPayments({ jobOf, chain, lookup = (address) => koios().utxo
     throw Object.assign(new Error("send signedTxCbor, or unsignedTxCbor with witnessSetHex"), { status: 400 });
   };
   return {
-    /** What a payment can spend of an owner's coins (CIP-30 hex): coins with a script or datum stay out. */
+    /** What a payment can spend of an owner's coins (CIP-30 hex): coins flagged `script` stay out. */
     async spendable(owner, utxos) { return spendableOf(await utxosOf(owner, utxos)); },
     /** The payment, unsigned, over the owner's UTxOs (CIP-30 hex when the page sends them, else the chain's). */
     async build(agentId, { utxos } = {}) {
@@ -384,8 +384,9 @@ export function orderPayments({ jobOf, chain, lookup = (address) => koios().utxo
       const otherWay = `Or send ${ada(pub.manualLovelace ?? pub.toAgentLovelace)} to the agent's wallet ${cardano} from any wallet; the order goes on when it lands.`;
       if (!list.length) throw Object.assign(new Error(`no coins of ${pub.owner.slice(0, 16)}… in what the wallet gave. ${otherWay}`), { status: 400 });
       let t;
+      const refScriptCostPerByte = (await chain.feeParams?.().catch(() => null))?.refScriptCostPerByte ?? undefined;
       // two witnesses paid for: a wallet may sign with its stake key too
-      try { t = buildUnsignedTransfer({ from: pub.owner, utxos: list, outputs, witnesses: 2 }); } catch (err) { if (!/not enough ADA/.test(err.message)) throw err; throw Object.assign(new Error(`${err.message}. ${otherWay}`), { status: 400 }); }
+      try { t = buildUnsignedTransfer({ from: pub.owner, utxos: list, outputs, witnesses: 2, refScriptCostPerByte }); } catch (err) { if (!/not enough ADA/.test(err.message)) throw err; throw Object.assign(new Error(`${err.message}. ${otherWay}`), { status: 400 }); }
       return { unsignedTxCbor: t.cborHex, txHash: t.txHash, fee: String(t.fee), outputs: outputs.map((o) => ({ to: o.to, lovelace: String(o.lovelace) })), total: String(outputs.reduce((s, o) => s + o.lovelace, 0n)) };
     },
     async submit(agentId, body) {

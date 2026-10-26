@@ -2051,7 +2051,7 @@ function payBlock(J,payAda){const ada=v=>v.toLocaleString('en-US',{maximumFracti
   +'<p class="t4 small" style="margin:0">Pay now opens your wallet to sign this one transaction; it waits up to 45 minutes. The deposit is the one you set in the step before. To change it, cancel the order and order again: nothing is paid yet.</p>'
   +'<div class="row" style="align-items:center;gap:14px"><button type="button" class="btn primary big" data-act="su-pay" data-k="pay"'+(SU.signing?' disabled':'')+'>'+IC.pen+(SU.signing?'In your wallet…':'Pay now')+'</button><button type="button" class="btn" data-act="su-cancel" data-k="cancel"'+(SU.signing?' disabled':'')+'>Cancel the order</button>'+(SU.paying?'<span class="t4">'+esc(SU.paying)+'</span>':'')+'</div>'
   +(addr?'<p class="t4 small" style="margin:0">Or, if this wallet cannot pay, send <b>'+ada(manA)+'</b> to your agent’s own address from any wallet: <span class="mono">'+esc(addr)+'</span> <button type="button" class="lnk" data-act="cn-copy" data-v="'+esc(addr)+'">Copy</button>. The gateway looks every half minute and goes on when it lands; the fee is taken from there.</p>':'')}
-const spendTxt=ada=>'Your wallet can pay '+ada(W.lovelace/1e6)+' from here'+(W.onScripts?'; '+ada(W.onScripts/1e6)+' more sits on coins that carry scripts or data, which the payment leaves alone':'')+'.';
+const spendTxt=ada=>'Your wallet can pay '+ada(W.lovelace/1e6)+' from here'+(W.onScripts?'; '+ada(W.onScripts/1e6)+' more sits on coins the payment cannot spend':'')+'.';
 let paneStep=0;
 function renderPane(){
   const s=SU.step;let h='';

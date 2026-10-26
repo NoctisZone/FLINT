@@ -200,7 +200,7 @@ export function ownerApi({ agents, gateway, onMandate = async () => {}, onboardi
       if (!agentOf(s.address, id)) return notYours;
       try { const r = await strikeKeys.rotate(id); log({ kind: "owner.strike.rotated", agent: id, accountId: r.accountId, publicKey: r.publicKey }); return { status: 200, body: { ok: true, agentId: id, ...r } }; } catch (err) { return trouble(err); }
     },
-    /** What a payment can spend of the session's wallet, from the CIP-30 UTxOs the page sends: coins with a script or datum stay out. */
+    /** What a payment can spend of the session's wallet, from the CIP-30 UTxOs the page sends: coins flagged `script` stay out. */
     async spendable(s, body) {
       if (!Array.isArray(body?.utxos)) return { status: 400, body: { error: "utxos: the wallet's CIP-30 UTxOs, hex" } };
       let r;

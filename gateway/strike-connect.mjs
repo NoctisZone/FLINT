@@ -42,8 +42,8 @@ export async function builderConnect({ baseUrl, code, feeShareBps = 10, wallet, 
  * follows after the confirmations the quote names.
  */
 export async function depositAda({ strike, wallet, koios, lovelace, log = () => {} }) {
-  // Strike's build-tx takes plain coins: no tokens, no scripts
-  const utxos = (await koios.utxos(wallet.address)).filter((u) => !u.assets?.length && !u.script);
+  // Strike's build-tx takes plain coins: no tokens, no script, no datum
+  const utxos = (await koios.utxos(wallet.address)).filter((u) => !u.assets?.length && !u.script && !u.refScriptSize && !u.datum);
   const have = utxos.reduce((s, u) => s + BigInt(u.value), 0n);
   if (have < BigInt(lovelace) + 500_000n) throw new Error(`wallet holds ${Number(have) / 1e6} ADA, ${Number(lovelace) / 1e6} plus fees needed`);
   const q = await strike.depositQuote({ blockchain: "cardano", asset_symbol: "ADA", asset_amount: String(lovelace) });
