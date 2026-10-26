@@ -4,6 +4,7 @@
  * wallet, requoted when the mark has moved more than that. Pure: it looks
  * at a view and returns the actions the gateway should take.
  */
+import { MIN_MARGIN } from "../gateway/markets.mjs";
 
 /**
  * @param {object} v
@@ -54,8 +55,11 @@ export function makerDecision(v, { spreadBps = 25, requoteBps, ttlSec, sizeUsd, 
   }
   const cap = Math.min(m.maxQuoteUsd, v.mandate.risk.maxNetDeltaUsd);
   const size = Math.min(sizeUsd ?? cap, cap);
-  // a size at the hedge minimum rounds up to the step: rounded down it would fall under the minimum
-  const wantBtc = size >= minQuoteUsd && floorStep(size / v.mark) * v.mark < minQuoteUsd ? roundTo(floorStep(size / v.mark) + step, step) : size / v.mark;
+  // a size near the hedge minimum rounds up to clear it with a margin: the mark moves before the fill is hedged
+  const floorBtc = roundTo(Math.ceil((minQuoteUsd * (1 + MIN_MARGIN)) / v.mark / step - 1e-9) * step, step);
+  const nearMin = size >= minQuoteUsd && size < floorBtc * v.mark;
+  // past the mandate's cap the margin gives way: one step above the minimum as before
+  const wantBtc = !nearMin ? size / v.mark : floorBtc * v.mark <= cap + 1e-9 ? floorBtc : floorStep(size / v.mark) * v.mark < minQuoteUsd ? roundTo(floorStep(size / v.mark) + step, step) : size / v.mark;
   // a fill moves net delta by the quote's size: an ask lowers it, a bid raises it; neither may leave the limit
   const roomBtc = v.mandate.risk.maxNetDeltaUsd / v.mark;
   // frozen: a quote may bring net delta toward zero but never across it; unwinding: never more than the inventory, inside the delta limit

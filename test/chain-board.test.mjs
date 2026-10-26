@@ -48,12 +48,12 @@ test("a value that is not a plain literal never goes into a function call bare",
   assert.throws(() => bare("x') or (1=1"), /not a bare OData literal/);
 });
 
-test("posting and retiring carry the trader's key; tags travel as a JSON array in a string", async () => {
+test("posting and retiring carry the trader's key; tags travel as an array", async () => {
   const requests = server(() => ({ status: 200, body: { offerId: OFFER, status: "open" } }));
   await board.post(cfg, { offer: "swapoffer1xyz", tags: ["otc-demo", "trader-0"], expiresAt: "2026-01-01T00:05:00.000Z" }, { key: "oda_trader" });
   await board.retire(cfg, OFFER, { key: "oda_trader" });
   assert.deepEqual(requests.map((r) => [r.method, r.url, r.auth, r.body]), [
-    ["POST", "https://gw.example/api/v1/nightgate/postSwapOffer", "Bearer oda_trader", { offer: "swapoffer1xyz", expiresAt: "2026-01-01T00:05:00.000Z", tags: '["otc-demo","trader-0"]' }],
+    ["POST", "https://gw.example/api/v1/nightgate/postSwapOffer", "Bearer oda_trader", { offer: "swapoffer1xyz", expiresAt: "2026-01-01T00:05:00.000Z", tags: ["otc-demo", "trader-0"] }],
     ["POST", "https://gw.example/api/v1/nightgate/retireSwapOffer", "Bearer oda_trader", { offerId: OFFER }],
   ]);
 });

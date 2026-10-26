@@ -293,6 +293,7 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
       // a hedge the stream has said nothing about for a while is asked after over REST, so a missed fill is not a freeze
       if (a.strike?.order && l.h.pending.length) await syncPending(a, l, PENDING_LOOKUP_MS).catch((err) => entry(a, { kind: "hedge.lookup.error", error: err.message.slice(0, 120) }));
       l.h.tick();
+      await l.h.retry().catch((err) => entry(a, { kind: "hedge.retry.error", error: err.message.slice(0, 120) }));
     }
   }
 

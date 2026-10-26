@@ -3,7 +3,7 @@
  * Run the gateway on preprod and Strike testnet: the agents' NIGHTGATE
  * servers, their Strike keys, the feed, the decision log.
  *
- *   npm run gateway -- [--rounds N] [--round-ms 20000] [--agents mm-rule,citizen-a] [--port 4481]
+ *   npm run gateway -- [--rounds N] (0 = until stopped) [--round-ms 20000] [--agents mm-rule,citizen-a] [--port 4481]
  *
  * An agent's Midnight wallet is trader index i in the order of agents/profiles.mjs,
  * or the index given as `name:i`; its Strike key is STRIKE_KEY_<AGENT>
@@ -641,7 +641,12 @@ if (toolsPort) {
   // stateless: a fresh server and transport per request, both gone when the response closes; an agent made meanwhile answers too
   const portOf = (agentId) => (ids().includes(agentId) ? g.portFor(agentId) : null);
   feed.setTools({ url: process.env.PUBLIC_TOOLS_URL ? `${process.env.PUBLIC_TOOLS_URL}/mcp/` : null, prices, paid: Boolean(x402) });
-  const tools = http.createServer(async (req, res) => {
+  // a throw here, an aborted body for one, would otherwise end the gateway
+  const tools = http.createServer((req, res) => serveTools(req, res).catch((err) => {
+    log(`tools: ${err.message}`);
+    if (!res.headersSent) { res.writeHead(500); res.end(); } else res.destroy();
+  }));
+  async function serveTools(req, res) {
     const m = req.url.match(/^\/mcp\/([a-z0-9-]+)$/);
     const port = m && portOf(m[1]);
     if (!port) { res.writeHead(404, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "no such agent" })); return; }
@@ -663,27 +668,24 @@ if (toolsPort) {
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on("close", () => { transport.close(); server.close(); });
     try { await server.connect(transport); await transport.handleRequest(req, res, parsedBody); } catch (err) { log(`tools: ${err.message}`); if (!res.headersSent) { res.writeHead(500); res.end(); } }
-  });
+  }
   await new Promise((r) => tools.listen(toolsPort, "0.0.0.0", r));
   log(`agent tools on http://localhost:${toolsPort}/mcp/<agentId> for ${ids().join(", ")}`);
 }
 
-if (rounds > 0) {
-  for (let i = 1; i <= rounds && !stopping; i++) {
-    log(`round ${i} of ${rounds}`);
-    await g.round();
-    if (stopping) break;
-    if (i % 5 === 0) await refreshReconcile().catch((err) => log(`reconcile: ${err.message}`));
-    if (i % attestEvery === 0 && !stopping) await attestWindow().catch((err) => log(`attest: ${err.message}`));
-    // several sponsored calls in a row: in the background, so the rounds and the quotes go on
-    if (badgesEvery && i % badgesEvery === 0 && i < rounds && !stopping) attestBadges().catch((err) => log(`badges: ${err.message}`));
-    if (i < rounds && !stopping) await new Promise((r) => setTimeout(r, roundMs));
-  }
-  if (!stopping) await attestWindow().catch((err) => log(`attest: ${err.message}`));
+// --rounds 0 runs until stopped; reconcile, attestations and badges count rounds either way
+const total = rounds > 0 ? rounds : Infinity;
+for (let i = 1; i <= total && !stopping; i++) {
+  log(rounds > 0 ? `round ${i} of ${rounds}` : `round ${i}`);
+  await g.round();
+  if (stopping) break;
+  if (i % 5 === 0) await refreshReconcile().catch((err) => log(`reconcile: ${err.message}`));
+  if (i % attestEvery === 0 && !stopping) await attestWindow().catch((err) => log(`attest: ${err.message}`));
+  // several sponsored calls in a row: in the background, so the rounds and the quotes go on
+  if (badgesEvery && i % badgesEvery === 0 && i < total && !stopping) attestBadges().catch((err) => log(`badges: ${err.message}`));
+  if (i < total && !stopping) await new Promise((r) => setTimeout(r, roundMs));
+}
+if (!stopping) {
+  await attestWindow().catch((err) => log(`attest: ${err.message}`));
   await shutdown();
-} else {
-  g.start(roundMs);
-  setInterval(() => refreshReconcile().catch((err) => log(`reconcile: ${err.message}`)), 5 * roundMs).unref();
-  setInterval(() => attestWindow().catch((err) => log(`attest: ${err.message}`)), attestEvery * roundMs).unref();
-  if (badgesEvery) setInterval(() => attestBadges().catch((err) => log(`badges: ${err.message}`)), badgesEvery * roundMs).unref();
 }

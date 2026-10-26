@@ -15,6 +15,7 @@
  * injected, as are `check`, `log` and `now`.
  */
 import { check as defaultCheck, signedSize } from "./checks.mjs";
+import { MIN_MARGIN } from "./markets.mjs";
 
 const EPS = 1e-12;
 const r8 = (x) => Math.round(x * 1e8) / 1e8;
@@ -55,6 +56,7 @@ export function hedger({ mandate, symbol, strike, check = defaultCheck, log = ()
   const done = [];           // { fill, hedge, latencyMs }
   let seq = 0;
   let restDue = null;        // a dead market order whose exposure waits for the other in-flight order before it rests
+  let placeFailed = false;   // the last order never reached Strike; retry() places it again
   // covered: a market order for this exposure is in flight; a resting limit is pulled before anything else happens, so it does not cover
   const covered = (e) => e.coveredBy !== null && pending.has(e.coveredBy) && !pending.get(e.coveredBy).resting;
   const inflightOf = () => [...pending.values()].filter((p) => !p.resting);
@@ -172,7 +174,10 @@ export function hedger({ mandate, symbol, strike, check = defaultCheck, log = ()
     // the hedge brings net delta toward zero and at most one step across it: a hedge one step short would leave the fill open
     const net = s.midnightInventoryBtc + s.strikePositionBtc + inflight;
     const most = Math.sign(need) === Math.sign(net) && Math.abs(net) < Math.abs(need) - stepBtc + 1e-12 ? Math.abs(net) : Math.abs(need);
-    const sizeBtc = r8(Math.floor(most / stepBtc + 1e-9) * stepBtc);
+    let sizeBtc = r8(Math.floor(most / stepBtc + 1e-9) * stepBtc);
+    // Strike judges the minimum at its own price: a hedge near it gets the few steps that clear it, worth less than dust
+    const clearBtc = r8(Math.ceil((minNotionalUsd * (1 + MIN_MARGIN)) / strike.mark() / stepBtc - 1e-9) * stepBtc);
+    if (sizeBtc < clearBtc && (clearBtc - sizeBtc) * strike.mark() <= dustUsd) sizeBtc = clearBtc;
     if (sizeBtc * strike.mark() < minNotionalUsd) {
       log({ kind: "carry.small", agent: mandate.agentId, unhedgedBtc: need, minNotionalUsd });
       // too small for Strike and nothing in flight: a freeze could not change that, so quoting goes on and the next fill nets or completes it
@@ -184,7 +189,8 @@ export function hedger({ mandate, symbol, strike, check = defaultCheck, log = ()
     const mark = strike.mark();
     const price = rest ? (side === "sell" ? onTick(mark * (1 - mandate.strike.priceBandPct / 100), +1) : onTick(mark * (1 + mandate.strike.priceBandPct / 100), -1)) : undefined;
     const action = { venue: "strike", kind: "order", symbol, side, sizeBtc, price, hedge: true };
-    const refused = check(action, view());
+    // the check sees the position as if the orders in flight had filled: an opposite hedge still on its way would otherwise count as open
+    const refused = check(action, { ...view(), strikePositionBtc: r8(s.strikePositionBtc - inflight) });
     if (refused) {
       log({ kind: "refusal", agent: mandate.agentId, action, ...refused });
       freeze(`hedge refused: ${refused.rule}`);
@@ -206,6 +212,7 @@ export function hedger({ mandate, symbol, strike, check = defaultCheck, log = ()
     } catch (err) {
       pending.delete(clientOrderId);
       for (const e of mineToCover) if (e.coveredBy === clientOrderId) e.coveredBy = null;
+      placeFailed = true;
       log({ kind: "hedge.failed", agent: mandate.agentId, error: err.message });
       freeze(`${rest ? "limit " : ""}hedge not placed: ${err.message}`);
       return { placed: false, error: err.message };
@@ -230,8 +237,9 @@ export function hedger({ mandate, symbol, strike, check = defaultCheck, log = ()
       p.filledBtc = r8(p.filledBtc + size);
       consume(p.side === "sell" ? 1 : -1, size, p.resting ? "limit" : "market", e.at, e.price, e.clientOrderId);
       if (p.filledBtc + EPS >= p.sizeBtc) pending.delete(e.clientOrderId);
-      // the order a deferred rest waited for is decided: rest now
-      if (restDue && !inflightOf().length) return rebalance({ rest: restDue });
+      // the order is done and nothing else flies: a deferred rest goes out now, and what the order left over
+      // (dust from a hedge sized to the net delta) is closed or carried, so a freeze does not outlive its hedge
+      if (!inflightOf().length && (restDue || exposures.some((x) => !covered(x)))) return rebalance({ rest: restDue });
       settle();
     } else if (e.kind === "order" && e.terminal && e.status !== "FILLED") {
       const p = pending.get(e.clientOrderId);
@@ -273,6 +281,15 @@ export function hedger({ mandate, symbol, strike, check = defaultCheck, log = ()
     return late.map(([id]) => id);
   }
 
+  /** An order Strike never took (a 5xx, a timeout) is placed again once a round, until one goes through. */
+  async function retry() {
+    if (!placeFailed) return null;
+    placeFailed = false;
+    if (pending.size || !exposures.some((x) => !covered(x))) return null;
+    log({ kind: "hedge.retry", agent: mandate.agentId, unhedgedBtc: s.unhedgedBtc });
+    return rebalance({ rest: restDue });
+  }
+
   /** Nothing unhedged and nothing pending: an automatic freeze is over. */
   function settle() {
     if (s.frozen && !s.manual && exposures.length === 0 && pending.size === 0) {
@@ -293,7 +310,7 @@ export function hedger({ mandate, symbol, strike, check = defaultCheck, log = ()
   }
 
   return {
-    onFill, onStrikeEvent, syncOrder, tick, freeze, snapshot,
+    onFill, onStrikeEvent, syncOrder, tick, retry, freeze, snapshot,
     /** Hedge what the books carry from the last run. */
     rehedge: () => { if (exposures.length) log({ kind: "carry", agent: mandate.agentId, unhedgedBtc: s.unhedgedBtc }); return rebalance(); },
     resume() { s.frozen = false; s.frozenReason = null; s.manual = false; log({ kind: "resumed", agent: mandate.agentId }); changed(); },

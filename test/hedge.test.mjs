@@ -114,6 +114,38 @@ test("the watchdog freezes once when a hedge misses its deadline; only the reduc
   assert.equal(log.at(-1).kind, "resumed");
 });
 
+test("a hedge sized to the net delta leaves dust on the exposure; the fill closes it as dust and lifts a late freeze", async () => {
+  // a step of inventory from before, no exposure: the hedge for a 0.00147 sell is 0.00146, one step short of the exposure
+  const { h, orders, log, clock } = setup({ state: { midnightInventoryBtc: 0.00001 } });
+  const r = await h.onFill(fill({ sizeBtc: 0.00147 }));
+  assert.equal(orders[0].size, 0.00146);
+  clock(T0 + M.risk.hedgeWithinSec * 1000 + 1);
+  h.tick();
+  assert.equal(h.state.frozen, true);
+  await h.onStrikeEvent({ kind: "fill", clientOrderId: r.clientOrderId, side: "BUY", size: "0.00146", price: "80000", at: T0 + 40_000 });
+  assert.equal(h.state.unhedgedBtc, 0, "the step left over is closed as dust");
+  assert.equal(h.state.frozen, false, "nothing is placeable, so nothing holds the freeze");
+  assert.ok(kinds(log).includes("dust"));
+  assert.equal(log.at(-1).kind, "resumed");
+});
+
+test("a hedge order Strike never took is placed again by retry(); its fill lifts the freeze", async () => {
+  let down = true;
+  const sent = [];
+  const { h, log } = setup({ placeOrder: async (o) => { if (down) throw new Error("Strike 503 on /v2/order"); sent.push(o); return { status: "pending" }; } });
+  await h.onFill(fill());
+  assert.equal(h.state.frozen, true);
+  assert.match(h.state.frozenReason, /not placed: Strike 503/);
+  down = false;
+  const r = await h.retry();
+  assert.equal(r.placed, true);
+  assert.equal(sent.length, 1);
+  assert.equal(await h.retry(), null, "one failure, one retry");
+  await h.onStrikeEvent({ kind: "fill", clientOrderId: r.clientOrderId, side: "BUY", size: "0.001", price: "80000", at: T0 + 5_000 });
+  assert.equal(h.state.frozen, false);
+  assert.ok(kinds(log).includes("hedge.retry"));
+});
+
 test("a rejected hedge order, or one Strike does not accept, freezes the agent; the exposure stays on the books", async () => {
   const a = setup();
   const r = await a.h.onFill(fill());
@@ -289,6 +321,15 @@ test("a fill on the other side nets a resting limit's exposure but never a flyin
   assert.deepEqual(h.hedges.map((x) => [x.fill.id, x.hedge.how, x.hedge.parts.map((p) => p.how)]), [["a", "netted", ["market", "netted"]], ["b", "netted", ["netted"]]]);
 });
 
+test("a hedge at Strike's minimum gets the steps that clear it with a margin; one far under it still carries", async () => {
+  const { h, orders } = setup({ minNotionalUsd: 100 });
+  assert.ok((await h.onFill(fill({ sizeBtc: 0.00125 }))).placed);
+  assert.deepEqual([orders[0].side, orders[0].size], ["buy", 0.00127], "0.00125 is 100 USD at the mark: one tick lower Strike rejects it");
+  const { h: low, orders: none } = setup({ minNotionalUsd: 100 });
+  assert.deepEqual(await low.onFill(fill({ sizeBtc: 0.0012 })), { placed: false, small: true }, "96 USD needs 5.6 USD more: past dust, carried");
+  assert.equal(none.length, 0);
+});
+
 test("a carried exposure under Strike's minimum lifts a freeze: nothing can be ordered, so quoting goes on; a later fill completes it", async () => {
   const { h, orders, log } = setup({ minNotionalUsd: 100, state: { midnightInventoryBtc: 0.0003, unhedgedBtc: 0.0003, frozen: true, frozenReason: "late" } });
   assert.deepEqual(await h.rehedge(), { placed: false, small: true });
@@ -370,4 +411,15 @@ test("stop means flat: flatten pulls a resting limit and sends what is unhedged 
   assert.deepEqual([f.placed, cancels.length, orders[2].type, orders[2].side, orders[2].size], [true, 1, "market", "buy", 0.001], "the limit pulled, the remainder sent at once");
   await h.onStrikeEvent({ kind: "order", symbol: "BTC-USD", clientOrderId: f.clientOrderId, status: "CANCELED", terminal: true, closeReason: "market_order_exceeded_slippage", at: T0 + 1_200 });
   assert.deepEqual([orders[3].type, h.pending.filter((p) => p.resting).length, h.state.frozen, h.state.manual], ["limit", 1, true, true], "Strike could not fill it: a limit rests, the agent stays stopped");
+});
+
+test("an opposite hedge still in flight counts toward the position cap: a book at the cap hedges both fills", async () => {
+  const { h, orders, log } = setup({ state: { midnightInventoryBtc: -0.003, strikePositionBtc: 0.003 } });
+  const sold = await h.onFill(fill({ id: "q-b", side: "buy", sizeBtc: 0.001 }));
+  assert.ok(sold.placed);
+  const bought = await h.onFill(fill({ id: "q-a", side: "sell", sizeBtc: 0.001 }));
+  assert.ok(bought.placed, "the buy fits once the sell in flight is counted");
+  assert.deepEqual(orders.map((o) => [o.side, o.size]), [["sell", 0.001], ["buy", 0.001]]);
+  assert.ok(!kinds(log).includes("refusal"));
+  assert.equal(h.state.frozen, false);
 });

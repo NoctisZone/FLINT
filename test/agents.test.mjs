@@ -128,11 +128,13 @@ test("an auto citizen takes the other side when that is all the board offers", (
   assert.equal(citizenDecision(v, { side: "buy", rnd: () => 0 }).take, null, "a fixed side does not switch");
 });
 
-test("a size at the hedge minimum rounds up to the step, so the quote stays hedgeable", () => {
+test("a size at the hedge minimum rounds up past it with a margin, so the quote stays hedgeable after a small move", () => {
   const v = view({ mark: 82_219, holdings: { btc: 0.0058, usd: 450, spendable: { btc: 0.0058, usd: 450 } } });
   const d = makerDecision(v, { sizeUsd: 100, minQuoteUsd: 100 });
-  assert.deepEqual(d.quotes.map((q) => [q.side, q.sizeBtc]), [["ask", 0.00122], ["bid", 0.00122]], "0.00121 would be 99.49 USD");
-  assert.ok(d.quotes.every((q) => q.sizeBtc * 82_219 >= 100));
+  assert.deepEqual(d.quotes.map((q) => [q.side, q.sizeBtc]), [["ask", 0.00123], ["bid", 0.00123]], "0.00122 would be 100.31 USD, under 101");
+  assert.ok(d.quotes.every((q) => q.sizeBtc * 82_219 >= 101));
+  const tight = makerDecision(view({ mark: 82_219, mandate: { ...v.mandate, midnight: { ...v.mandate.midnight, maxQuoteUsd: 100.5 } }, holdings: v.holdings }), { sizeUsd: 100, minQuoteUsd: 100 });
+  assert.equal(tight.quotes[0].sizeBtc, 0.00122, "a cap under the margin keeps one step above the minimum");
   const big = makerDecision(v, { sizeUsd: 150, minQuoteUsd: 100 });
   assert.equal(big.quotes[0].sizeBtc, 0.00182, "well above the minimum: rounded down as before");
 });

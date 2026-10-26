@@ -47,6 +47,17 @@ test("a Midnight fill learns its hedge later; a Strike fill entry or an unknown 
   assert.equal(fills[1].hedge.latencySec, 3.1);
 });
 
+test("meta totals count every Midnight fill, hedge and refusal of the run, past what the lists keep", () => {
+  const s = feedState();
+  for (let i = 0; i < 2005; i++) s.fill({ ts: "2026-10-22T10:01:00Z", quoteId: `q${i}`, agentId: "mm-rule", midnight: { side: "sell", sizeBtc: 0.001, price: 80_000 } });
+  s.fill({ ts: "2026-10-22T10:01:03Z", agentId: "mm-rule", strikeFill: { side: "BUY", size: "0.001", price: "80000", clientOrderId: "mm-rule-hedge-1" } });
+  s.fillHedged("q2004", { how: "market" });
+  s.fillHedged("q2004", { how: "market" });
+  s.refusal({ ts: "2026-10-22T10:02:00Z", agentId: "rogue", rule: "maxNotionalUsd" });
+  assert.equal(s.get("fills").fills.length, 2000);
+  assert.deepEqual(s.get("meta").totals, { trades: 2005, tradedUsd: 160_400, hedged: 1, refusals: 1 });
+});
+
 test("with a static folder the server hands out the page at / and its files, never anything outside the folder", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "flint-arena-"));
   fs.writeFileSync(path.join(dir, "flint.html"), "<!doctype html><title>Flint</title>");
@@ -62,6 +73,8 @@ test("with a static folder the server hands out the page at / and its files, nev
   assert.equal((await fetch(base + "/feed/meta")).status, 200, "the feed still answers");
   assert.equal((await fetch(base + "/logos/../../etc/passwd")).status, 404);
   assert.equal((await fetch(base + "/nothing.css")).status, 404);
+  assert.equal((await fetch(base + "/%")).status, 404, "a malformed escape is a miss, not a crash");
+  assert.equal((await fetch(base + "/feed/meta")).status, 200, "the server is still up");
   server.close();
   fs.rmSync(dir, { recursive: true, force: true });
 });

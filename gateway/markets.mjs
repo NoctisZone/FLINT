@@ -14,6 +14,8 @@ export const MARKETS = {
   "SOL-USD": { symbol: "SOL-USD", base: "SOL", pair: "tSOL/tUSD", token: "market:tSOL", decimals: 9, step: 0.01, tick: 0.01, minNotionalUsd: 10 },
 };
 export const QUOTE_TOKEN = "market:tUSD";
+/** Share above Strike's minimum order that quotes and hedges keep, so a small price move cannot push them under it. */
+export const MIN_MARGIN = 0.01;
 export const SYMBOLS = Object.keys(MARKETS);
 
 /** The market of a symbol; throws for one the gateway does not trade. */

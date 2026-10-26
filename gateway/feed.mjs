@@ -17,7 +17,7 @@ const KEEP = 2000;
  */
 export function feedState({ runStart = new Date().toISOString(), networks = { midnight: "preprod", strike: "testnet" }, marks: savedMarks = null, onMarks = () => {} } = {}) {
   const s = {
-    meta: { runStart, networks, strikeMark: null, sponsorReady: null, strikeLiquidity: null, midnightBoard: "server", attestEveryMs: null, tools: null, owner: false, orders: null, marks: [], markets: {}, serverTime: null },
+    meta: { runStart, networks, strikeMark: null, sponsorReady: null, strikeLiquidity: null, midnightBoard: "server", attestEveryMs: null, tools: null, owner: false, orders: null, marks: [], markets: {}, serverTime: null, totals: { trades: 0, tradedUsd: 0, hedged: 0, refusals: 0 } },
     agents: new Map(),  // agentId → card
     quotes: new Map(),  // quoteId → open quote
     fills: [], decisions: [], refusals: [], proofs: new Map(),
@@ -60,11 +60,12 @@ export function feedState({ runStart = new Date().toISOString(), networks = { mi
     agentGone: (agentId) => { s.agents.delete(agentId); },
     quoteOpen: (q) => { s.quotes.set(q.quoteId, q); },
     quoteGone: (quoteId) => { s.quotes.delete(quoteId); },
-    fill: (f) => push(s.fills, f),
+    // the lists keep the newest entries only; `meta.totals` counts the whole run
+    fill: (f) => { push(s.fills, f); if (f.midnight) { s.meta.totals.trades++; s.meta.totals.tradedUsd += f.midnight.sizeBtc * f.midnight.price; } },
     /** The hedge that closed a Midnight fill, once it is known; a fill the feed never saw is ignored. */
-    fillHedged: (quoteId, hedge) => { const f = s.fills.find((x) => x.quoteId === quoteId && x.midnight); if (f) f.hedge = hedge; },
+    fillHedged: (quoteId, hedge) => { const f = s.fills.find((x) => x.quoteId === quoteId && x.midnight); if (f) { if (!f.hedge) s.meta.totals.hedged++; f.hedge = hedge; } },
     decision: (d) => push(s.decisions, d),
-    refusal: (r) => push(s.refusals, r),
+    refusal: (r) => { push(s.refusals, r); s.meta.totals.refusals++; },
     proof: (agentId, p) => { s.proofs.set(agentId, { agentId, ...(s.proofs.get(agentId) ?? {}), ...p }); },
     capital: (c) => { s.capital = c; },
     revenue: (r) => { s.revenue = r; },
@@ -73,7 +74,7 @@ export function feedState({ runStart = new Date().toISOString(), networks = { mi
       const after = since ? Date.parse(since) : null;
       const recent = (list) => (after ? list.filter((x) => Date.parse(x.ts) > after) : list);
       switch (route) {
-        case "meta": return { ...s.meta, serverTime: new Date().toISOString() };
+        case "meta": return { ...s.meta, totals: { ...s.meta.totals, tradedUsd: Math.round(s.meta.totals.tradedUsd * 100) / 100 }, serverTime: new Date().toISOString() };
         case "agents": return { agents: [...s.agents.values()] };
         case "quotes": return { quotes: [...s.quotes.values()].sort((a, b) => (a.expiresAt < b.expiresAt ? 1 : -1)) };
         case "fills": return { fills: recent(s.fills) };
@@ -92,7 +93,8 @@ const TYPES = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=
 
 /** A file of the arena folder for a request path; null outside the folder or when there is none. `/` is the page. */
 function staticFile(dir, pathname) {
-  const rel = pathname === "/" || pathname === "/index.html" ? "flint.html" : decodeURIComponent(pathname.slice(1));
+  let rel;
+  try { rel = pathname === "/" || pathname === "/index.html" ? "flint.html" : decodeURIComponent(pathname.slice(1)); } catch { return null; }
   const file = path.resolve(dir, rel);
   if (!file.startsWith(path.resolve(dir) + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) return null;
   return { file, type: TYPES[path.extname(file).toLowerCase()] ?? "application/octet-stream" };
@@ -100,7 +102,11 @@ function staticFile(dir, pathname) {
 
 /** Serve `state` on /feed/<route> and, with `staticDir`, the arena page at / and its files; resolves to the server, `port` 0 picks a free one. */
 export function feedServer(state, { port = 4481, host = "127.0.0.1", staticDir = null, handlers = [] } = {}) {
-  const server = http.createServer(async (req, res) => {
+  // a throw inside an async request handler would end the whole process
+  const server = http.createServer((req, res) => serve(req, res).catch((err) => {
+    if (!res.headersSent) { res.writeHead(500, { "content-type": "application/json" }); res.end(JSON.stringify({ error: err.message })); } else res.destroy();
+  }));
+  async function serve(req, res) {
     const url = new URL(req.url, "http://x");
     // the owner API and anything else mounted next to the feed takes its paths first
     for (const h of handlers) { try { if (await h(req, res)) return; } catch (err) { if (!res.headersSent) { res.writeHead(500, { "content-type": "application/json" }); res.end(JSON.stringify({ error: err.message })); } return; } }
@@ -117,6 +123,6 @@ export function feedServer(state, { port = 4481, host = "127.0.0.1", staticDir =
     }
     res.writeHead(404, { "content-type": "application/json", "access-control-allow-origin": "*" });
     res.end(JSON.stringify({ error: "not found" }));
-  });
+  }
   return new Promise((resolve) => server.listen(port, host, () => resolve(server)));
 }

@@ -201,7 +201,7 @@ export function journalSwap(result, label = {}) {
 
 /** The server's offer board. `key` is the caller's: an offer is retired by the key that posted it. */
 export const board = {
-  post: (cfg, { offer, expiresAt, tags }, { key } = {}) => ng(cfg, "postSwapOffer", { offer, expiresAt, tags: tags ? JSON.stringify(tags) : undefined }, { key }),
+  post: (cfg, { offer, expiresAt, tags }, { key } = {}) => ng(cfg, "postSwapOffer", { offer, expiresAt, tags }, { key }),
   /** Open offers newest first; `status` reads the closed ones (filled | retired | expired | all), `mine` only the caller's. */
   list: (cfg, { givesType = null, wantsType = null, tag = null, limit = null, status = null, since = null, mine = null } = {}, { key } = {}) =>
     ngFunction(cfg, "listSwapOffers", { givesType, wantsType, tag, limit, status, since: since ? bare(since) : null, mine }, { key }),

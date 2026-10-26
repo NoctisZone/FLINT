@@ -1318,11 +1318,13 @@ function renderScore(){
   const landed=S.trades.filter(t=>t.landedAt),hed=landed.filter(t=>t.hedge);
   const lats=hed.filter(t=>t.hedge.how!=='netted').map(t=>t.hedge.latencySec);
   const card=id=>document.getElementById(id).closest('.kpi');
-  if(changed('k1',landed.length))bump(card('k1v'));tween('k1v',landed.length,int);
-  set('k1s',pro()?landed.reduce((s,t)=>s+t.sizeBtc,0).toFixed(5)+' tBTC on Midnight':money(landed.reduce((s,t)=>s+t.sizeBtc*t.price,0),0)+' traded in private');
-  const k2=hed.length+'/'+landed.length;if(changed('k2',k2))bump(card('k2v'));set('k2v',k2);
+  /* the live feed counts the whole run; the page's own lists hold only the newest trades */
+  const tot=S.totals,nT=tot?tot.trades:landed.length,usdT=tot?tot.tradedUsd:landed.reduce((s,t)=>s+t.sizeBtc*t.price,0);
+  if(changed('k1',nT))bump(card('k1v'));tween('k1v',nT,int);
+  set('k1s',pro()&&!tot?landed.reduce((s,t)=>s+t.sizeBtc,0).toFixed(5)+' tBTC on Midnight':money(usdT,0)+' traded in private');
+  const k2=(tot?tot.hedged:hed.length)+'/'+nT;if(changed('k2',k2))bump(card('k2v'));set('k2v',k2);
   set('k2s',lats.length?'slowest '+Math.max.apply(null,lats).toFixed(1)+' s':'waiting for the first hedge');
-  const rf=S.refusals.length;if(changed('k3',rf))bump(card('k3v'));tween('k3v',rf,int);
+  const rf=tot?tot.refusals:S.refusals.length;if(changed('k3',rf))bump(card('k3v'));tween('k3v',rf,int);
   set('k3s',pro()?rf+' refusals · 0 violations':'none got through');
   const pr=Object.values(S.proofs).reduce((s,p)=>s+(p.windows||0)+(p.mandate?(p.mandate.n||1):0),0);
   if(changed('k4',pr))bump(card('k4v'));tween('k4v',pr,int);
@@ -2250,6 +2252,7 @@ if(LIVE){
   function mapMeta(m){
     /* a new run on the gateway: the trades, hedges and quotes of the old one are over, so the page starts afresh (its wallet session and set-up come back on their own) */
     if(m.runStart){if(LV.runStart&&LV.runStart!==m.runStart){location.reload();return}LV.runStart=m.runStart}
+    if(m.totals&&typeof m.totals.trades==='number')S.totals=m.totals;
     /* the gateway's recent marks fill the chart on the first poll, so a reload does not start it empty */
     if(m.markets&&typeof m.markets==='object'&&Object.keys(m.markets).length){
       for(const sym in m.markets){const v=m.markets[sym];if(!(v&&typeof v.mark==='number'&&v.mark>0))continue;const k=S.mk[sym]||(S.mk[sym]={mark:0,hist:[]});
