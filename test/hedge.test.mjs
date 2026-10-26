@@ -328,6 +328,10 @@ test("a hedge at Strike's minimum gets the steps that clear it with a margin; on
   const { h: low, orders: none } = setup({ minNotionalUsd: 100 });
   assert.deepEqual(await low.onFill(fill({ sizeBtc: 0.0012 })), { placed: false, small: true }, "96 USD needs 5.6 USD more: past dust, carried");
   assert.equal(none.length, 0);
+  // the books the live gateway came back with: frozen on a rejected hedge, 0.00125 short
+  const { h: frozen, orders: placed } = setup({ minNotionalUsd: 100, state: { midnightInventoryBtc: 0.00187, strikePositionBtc: -0.00312, unhedgedBtc: -0.00125, frozen: true, frozenReason: "hedge rejected: order_less_than_min_notional" } });
+  assert.ok((await frozen.rehedge()).placed, "crossing zero by two steps is dust: the frozen check lets the hedge through");
+  assert.deepEqual([placed[0].side, placed[0].size], ["buy", 0.00127]);
 });
 
 test("a carried exposure under Strike's minimum lifts a freeze: nothing can be ordered, so quoting goes on; a later fill completes it", async () => {

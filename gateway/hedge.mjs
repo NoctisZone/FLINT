@@ -15,7 +15,7 @@
  * injected, as are `check`, `log` and `now`.
  */
 import { check as defaultCheck, signedSize } from "./checks.mjs";
-import { MIN_MARGIN } from "./markets.mjs";
+import { DUST_USD, MIN_MARGIN } from "./markets.mjs";
 
 const EPS = 1e-12;
 const r8 = (x) => Math.round(x * 1e8) / 1e8;
@@ -39,7 +39,7 @@ const r8 = (x) => Math.round(x * 1e8) / 1e8;
  * @param {boolean} [o.ownAccount]          false when the Strike key is shared: position events then describe other agents too and are ignored
  * @param {string} [o.prefix]               the start of this hedger's order ids; an agent on several markets gives each hedger its own
  */
-export function hedger({ mandate, symbol, strike, check = defaultCheck, log = () => {}, now = Date.now, state: init = {}, stepBtc = 0.00001, tickSize = 1, minNotionalUsd = 0, dustUsd = 5, onChange = () => {}, onHedged = () => {}, ownAccount = true, prefix = `${mandate.agentId}-` }) {
+export function hedger({ mandate, symbol, strike, check = defaultCheck, log = () => {}, now = Date.now, state: init = {}, stepBtc = 0.00001, tickSize = 1, minNotionalUsd = 0, dustUsd = DUST_USD, onChange = () => {}, onHedged = () => {}, ownAccount = true, prefix = `${mandate.agentId}-` }) {
   // prices on the market's tick: a resting limit rounded toward the mark, a reported fill price rounded plainly
   const places = Math.max(0, Math.ceil(-Math.log10(tickSize) - 1e-9));
   const onTick = (x, dir) => Number(((dir > 0 ? Math.ceil(x / tickSize - 1e-9) : dir < 0 ? Math.floor(x / tickSize + 1e-9) : Math.round(x / tickSize)) * tickSize).toFixed(places));

@@ -16,6 +16,8 @@ export const MARKETS = {
 export const QUOTE_TOKEN = "market:tUSD";
 /** Share above Strike's minimum order that quotes and hedges keep, so a small price move cannot push them under it. */
 export const MIN_MARGIN = 0.01;
+/** Exposure in USD too small to order: closed as dust, and how far a hedge may cross zero. */
+export const DUST_USD = 5;
 export const SYMBOLS = Object.keys(MARKETS);
 
 /** The market of a symbol; throws for one the gateway does not trade. */

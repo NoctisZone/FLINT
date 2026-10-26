@@ -9,6 +9,7 @@
  * Midnight inventory plus its Strike position, in BTC, signed.
  */
 import { mandateProblems } from "./mandate.mjs";
+import { DUST_USD } from "./markets.mjs";
 
 /**
  * @typedef {object} Action
@@ -21,6 +22,7 @@ import { mandateProblems } from "./mandate.mjs";
  * @prop {number} [price]        limit price; a Strike market order has none
  * @prop {number} [ttlSec]       quote expiry
  * @prop {boolean} [reduceOnly]
+ * @prop {boolean} [hedge]        the hedger's order for a fill
  *
  * @typedef {object} State
  * @prop {object} mandate
@@ -54,7 +56,9 @@ export function reducesDelta(a, s) {
   if (a.kind === "cancel" || !(a.sizeBtc > 0)) return false;
   const before = netDeltaBtc(s);
   const after = before + signedSize(a);
-  return Math.abs(after) < Math.abs(before) - EPS && (Math.sign(after) !== -Math.sign(before) || Math.abs(after) < STEP_BTC);
+  // a hedge sized up to clear Strike's minimum may cross by up to the dust amount
+  const dust = a.hedge && s.mark > 0 ? Math.max(STEP_BTC, DUST_USD / s.mark) : STEP_BTC;
+  return Math.abs(after) < Math.abs(before) - EPS && (Math.sign(after) !== -Math.sign(before) || Math.abs(after) < dust);
 }
 
 /** @returns {null | {rule, limit, attempted, message}} */
