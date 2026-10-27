@@ -104,20 +104,24 @@ export async function ngFunction(cfg, name, params, { timeoutMs = 30_000, key = 
   return body.value ?? body;
 }
 
-/** Poll until the job leaves the queue. A slow or failing poll is not a verdict. */
-export async function waitForJob(cfg, jobId, sessionId, { timeoutMs = 600_000, everyMs = 5_000, key } = {}) {
+/** Ask until the job leaves the queue; the server holds each call up to 25 s until it settles. A slow or failing call is not a verdict. */
+export async function waitForJob(cfg, jobId, { timeoutMs = 600_000, everyMs = 5_000, key } = {}) {
   const t0 = Date.now();
   let job = null;
   for (;;) {
+    const asked = Date.now();
+    let held = false;
     try {
-      job = await ng(cfg, "getJobStatus", { jobId, sessionId }, { key });
+      job = await ng(cfg, "getJobStatus", { jobId, waitMs: 25_000 }, { key, timeoutMs: 35_000 });
       if (["succeeded", "failed"].includes(job.status)) return job;
       if (job.status === "reconciliation_required" && job.txHash) return job;
+      held = Date.now() - asked > 10_000;
     } catch (e) {
       if (!/HTTP 5\d\d|fetch failed|timeout|ECONNRESET/i.test(e.message)) throw e;
     }
     if (Date.now() - t0 > timeoutMs) return job;
-    await new Promise((r) => setTimeout(r, everyMs));
+    // a held call asks again at once; an error or a server that answers at once waits a little
+    if (!held) await new Promise((r) => setTimeout(r, everyMs));
   }
 }
 
@@ -184,7 +188,7 @@ export async function mintTo(cfg, pkg, spec, amount, index) {
     });
     const provingMs = Date.now() - t0;
     const sub = await ng(cfg, "sponsorUnboundTransaction", { unboundTxB64: built.unboundTxB64, idempotencyKey: `otc-mint-${Date.now()}` });
-    const entry = entryOf(await waitForJob(cfg, sub.jobId, sub.sessionId), { circuit: "mint", token: spec, amount: String(amount), agent: Number(index), jobId: sub.jobId, provingMs, bytes: built.serializedBytes });
+    const entry = entryOf(await waitForJob(cfg, sub.jobId), { circuit: "mint", token: spec, amount: String(amount), agent: Number(index), jobId: sub.jobId, provingMs, bytes: built.serializedBytes });
     journal(entry);
     return entry;
   } finally {

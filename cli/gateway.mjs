@@ -142,6 +142,7 @@ async function buildAgent({ agentId, index, mind, side, mandate, name = agentId,
   const keyName = `STRIKE_KEY_${agentId.toUpperCase().replace(/-/g, "_")}`;
   const privateKeyHex = kind === "maker" || kind === "rogue" ? (own?.apiWalletPrivateKeyHex || process.env[keyName] || process.env.STRIKE_KEY) : null;
   let strike = null, stream = null, keyUsed = privateKeyHex;
+  const leverages = {};
   if (privateKeyHex) {
     const builderFeeBps = own ? Math.min(own.feeShareBps ?? 0, Number(process.env.STRIKE_BUILDER_FEE_BPS || own.feeShareBps || 0)) : (process.env.STRIKE_BUILDER_FEE_BPS ? Number(process.env.STRIKE_BUILDER_FEE_BPS) : undefined);
     strike = strikeClient({ baseUrl: strikeBase, privateKeyHex, builderFeeBps });
@@ -159,6 +160,7 @@ async function buildAgent({ agentId, index, mind, side, mandate, name = agentId,
     for (const sym of symbols) {
       const lev = settings.symbol_settings?.[sym]?.leverage ?? settings.default_leverage;
       if (lev > mandate.strike.maxLeverage) { await patient(`${agentId}: Strike leverage`, () => strike.setLeverage(sym, mandate.strike.maxLeverage)); log(`${agentId}: Strike leverage on ${sym} set to ${mandate.strike.maxLeverage}`); }
+      leverages[sym] = Math.min(Number(lev) || mandate.strike.maxLeverage, mandate.strike.maxLeverage);
     }
     stream = (onEvent, onStatus) => userStream({ baseUrl: strike.baseUrl, privateKeyHex: keyUsed, onEvent, onStatus: (x) => { log(`${agentId}: strike stream ${x.state}${x.message ? ` ${x.message}` : ""}`); onStatus?.(x); } });
     // the books' Strike position is what Strike says it is, not what an earlier run on another account recorded
@@ -177,7 +179,7 @@ async function buildAgent({ agentId, index, mind, side, mandate, name = agentId,
   }
   // a citizen looks every round and acts on about half of them; a maker quotes 120 USD a side, above Strike's minimum and inside what a citizen's coins pay
   // the shared key serves every maker without an account of its own: its fills and position are not one agent's
-  return { agentId, name, mandate, mind: kind, side, venue, strike, stream, sharedStrike: Boolean(keyUsed) && keyUsed === process.env.STRIKE_KEY, wallets: walletsOf(agentId), trader, brain, leverage: mandate.strike.maxLeverage, signatureOk, stopped, stoppedReason, market: symbol, markets: symbols, rules, step: market?.step, tick: market?.tick, minQuoteUsd: market?.minNotionalUsd, options: kind === "citizen" ? { rate: Number(process.env.CITIZEN_RATE || 0.5) } : { sizeUsd: Number(process.env.MAKER_SIZE_USD || 120) } };
+  return { agentId, name, mandate, mind: kind, side, venue, strike, stream, sharedStrike: Boolean(keyUsed) && keyUsed === process.env.STRIKE_KEY, wallets: walletsOf(agentId), trader, brain, leverage: mandate.strike.maxLeverage, leverages, signatureOk, stopped, stoppedReason, market: symbol, markets: symbols, rules, step: market?.step, tick: market?.tick, minQuoteUsd: market?.minNotionalUsd, options: kind === "citizen" ? { rate: Number(process.env.CITIZEN_RATE || 0.5) } : { sizeUsd: Number(process.env.MAKER_SIZE_USD || 120) } };
 }
 
 const agents = [];
@@ -530,7 +532,7 @@ async function anchorMandates() {
 async function anchorMandate(a) {
   if (!VAULT || !a.strike) return;
   {
-    const at = attesters.get(a.agentId) ?? attester({ call: (tool, args) => a.trader.call(tool, args), contractAddress: VAULT, artifact: process.env.ATTESTATION_ARTIFACT || "attestation-vault-32", waitForJob: (jobId, sessionId) => import("../market/chain.mjs").then((m) => m.waitForJob(cfg, jobId, sessionId, { timeoutMs: 300_000 })), log: (e) => entries.append({ agent: a.agentId, ...e }) });
+    const at = attesters.get(a.agentId) ?? attester({ call: (tool, args) => a.trader.call(tool, args), contractAddress: VAULT, artifact: process.env.ATTESTATION_ARTIFACT || "attestation-vault-32", jobTimeoutMs: 300_000,log: (e) => entries.append({ agent: a.agentId, ...e }) });
     attesters.set(a.agentId, at);
     try {
       const id = await at.identity();

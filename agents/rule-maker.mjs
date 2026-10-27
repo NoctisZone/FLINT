@@ -16,6 +16,8 @@ import { MIN_MARGIN } from "../gateway/markets.mjs";
  * @param {number} [v.netDeltaBtc]  inventory plus Strike position, signed; the side that would grow it is sized to the limit
  * @param {number} [v.strikePositionBtc]  signed; a fill's hedge must keep the Strike position under its cap
  * @param {number} [v.inventoryBtc]  tBTC held, signed; what an unwind sells down
+ * @param {number} [v.strikeAvailableUsd]  Strike's free margin; null = not known, no margin limit
+ * @param {number} [v.leverage]  the market's leverage on Strike; default 1
  * @param {number} v.now   ms
  * @param {object} [o]
  * @param {number} [o.spreadBps]       each side's distance from the mark, clamped into the mandate's band
@@ -69,20 +71,22 @@ export function makerDecision(v, { spreadBps = 25, requoteBps, ttlSec, sizeUsd, 
   // the part of a fill that nets open exposure of the other side needs no hedge at all
   const pos = v.strikePositionBtc ?? 0;
   const posCapBtc = v.mandate.strike.maxPositionUsd / v.mark;
-  const hedgeRoomBid = Math.max(0, posCapBtc + pos) + Math.max(0, -delta);
-  const hedgeRoomAsk = Math.max(0, posCapBtc - pos) + Math.max(0, delta);
+  // the part of a hedge that opens or grows the position needs margin on Strike; reducing it needs none
+  const marginBtc = typeof v.strikeAvailableUsd === "number" ? Math.max(0, v.strikeAvailableUsd) * MARGIN_SHARE * (v.leverage || 1) / v.mark : Infinity;
+  const hedgeRoomBid = Math.min(Math.max(0, posCapBtc + pos), Math.max(0, pos) + marginBtc) + Math.max(0, -delta);
+  const hedgeRoomAsk = Math.min(Math.max(0, posCapBtc - pos), Math.max(0, -pos) + marginBtc) + Math.max(0, delta);
   const fits = (x) => x >= step - 1e-12 && x * v.mark >= minQuoteUsd;
   const quotes = [];
   const reasons = [];
   if (!keep.ask && (!onlySide || onlySide === "ask")) {
     const sizeBtc = Math.min(wantBtc, v.holdings.spendable.btc, roomAsk, hedgeRoomAsk);
     if (fits(floorStep(sizeBtc))) quotes.push({ side: "ask", sizeBtc: floorStep(sizeBtc), price: ceilTick(v.mark * (1 + half)), ttlSec: ttl });
-    else reasons.push(size < minQuoteUsd ? `quote size ${size} USD is under the hedge minimum of ${minQuoteUsd} USD` : roomAsk * v.mark < minQuoteUsd ? "net delta leaves no room for an ask" : hedgeRoomAsk * v.mark < minQuoteUsd ? "the Strike position cap leaves no room to hedge an ask" : `not enough tBTC for an ask of at least ${minQuoteUsd} USD`);
+    else reasons.push(size < minQuoteUsd ? `quote size ${size} USD is under the hedge minimum of ${minQuoteUsd} USD` : roomAsk * v.mark < minQuoteUsd ? "net delta leaves no room for an ask" : hedgeRoomAsk * v.mark < minQuoteUsd ? "the Strike position cap or margin leaves no room to hedge an ask" : `not enough tBTC for an ask of at least ${minQuoteUsd} USD`);
   }
   if (!keep.bid && (!onlySide || onlySide === "bid")) {
     const sizeBtc = Math.min(wantBtc, v.holdings.spendable.usd / (v.mark * (1 - half)), roomBid, hedgeRoomBid);
     if (fits(floorStep(sizeBtc))) quotes.push({ side: "bid", sizeBtc: floorStep(sizeBtc), price: floorTick(v.mark * (1 - half)), ttlSec: ttl });
-    else reasons.push(size < minQuoteUsd ? `quote size ${size} USD is under the hedge minimum of ${minQuoteUsd} USD` : roomBid * v.mark < minQuoteUsd ? "net delta leaves no room for a bid" : hedgeRoomBid * v.mark < minQuoteUsd ? "the Strike position cap leaves no room to hedge a bid" : `not enough tUSD for a bid of at least ${minQuoteUsd} USD`);
+    else reasons.push(size < minQuoteUsd ? `quote size ${size} USD is under the hedge minimum of ${minQuoteUsd} USD` : roomBid * v.mark < minQuoteUsd ? "net delta leaves no room for a bid" : hedgeRoomBid * v.mark < minQuoteUsd ? "the Strike position cap or margin leaves no room to hedge a bid" : `not enough tUSD for a bid of at least ${minQuoteUsd} USD`);
   }
   const reason = [
     onlySide ? (unwind ? `unwinding: only the ${onlySide} that sells the inventory down` : `frozen: only the ${onlySide} that reduces net delta`) : null,
@@ -127,6 +131,8 @@ export function citizenDecision(v, { side: wanted = "buy", tolBps = 60, rate = 0
 const closingSoon = (q, now) => q.expiresAt && Date.parse(q.expiresAt) - now < 60_000;
 /** Strike's BTC-USD step: quote sizes are multiples of it, so a hedge is the same size. */
 export const STEP_BTC = 0.00001;
+// the share of Strike's free margin a quote may plan its hedge on; the rest absorbs fees and price moves
+const MARGIN_SHARE = 0.8;
 /** A value rounded to the decimals of a step or tick (0.00001 → 5 places, 1 → 0), so float noise never reaches an order. */
 const roundTo = (x, unit) => { const places = Math.max(0, Math.ceil(-Math.log10(unit) - 1e-9)); return Number(x.toFixed(places)); };
 // prices round away from the mark, so a quote never lands inside the spread it was meant to keep

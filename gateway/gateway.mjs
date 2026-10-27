@@ -194,6 +194,10 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
   async function makerRound(a, b) {
     if (a.stopped && !a.unwinding) return;
     if (a.unwinding && await unwindDone(a, b)) return;
+    // Strike's free margin once a round; a failed read keeps the last one
+    if (a.strike?.account && !a.sharedStrike) {
+      try { b.strikeAvailableUsd = Number((await a.strike.account()).available_balance); } catch (err) { entry(a, { kind: "margin.stale", error: err.message.slice(0, 120) }); }
+    }
     for (const leg of legsOf(b)) await makerLeg(a, b, leg);
   }
 
@@ -220,7 +224,7 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
       // a quote under Strike's smallest order could not be hedged: Claude's size is lifted to that floor
       else { options = { ...options, spreadBps: c.spreadBps, sizeUsd: Math.max(c.sizeUsd, minAt(a, leg.symbol)), pause: c.pause }; said = c.reason; }
     }
-    const d = makerDecision({ mandate: a.mandate, mark, holdings: s.holdings, openQuotes: s.open, frozen: s.frozen, now: now(), netDeltaBtc: s.midnightInventoryBtc + s.strikePositionBtc, strikePositionBtc: s.strikePositionBtc, inventoryBtc: s.midnightInventoryBtc }, options);
+    const d = makerDecision({ mandate: a.mandate, mark, holdings: s.holdings, openQuotes: s.open, frozen: s.frozen, now: now(), netDeltaBtc: s.midnightInventoryBtc + s.strikePositionBtc, strikePositionBtc: s.strikePositionBtc, inventoryBtc: s.midnightInventoryBtc, strikeAvailableUsd: b.strikeAvailableUsd ?? null, leverage: a.leverages?.[leg.symbol] ?? a.leverage }, options);
     if (said) d.reason = `${said} (${d.reason})`;
     if (legsOf(b).length > 1) d.reason = `${leg.symbol}: ${d.reason}`;
     for (const id of d.retire) { await a.venue.retire(id); feed.quoteGone(id); }

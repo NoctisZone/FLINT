@@ -4,7 +4,7 @@
  */
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { bare, board, ng, ngFunction } from "../market/chain.mjs";
+import { bare, board, ng, ngFunction, waitForJob } from "../market/chain.mjs";
 
 const cfg = { nightgateUrl: "https://gw.example", nightgateKey: "oda_market" };
 const C = "c".repeat(64);
@@ -64,4 +64,14 @@ test("the error says what the server said: the product's shape and the gateway's
   server(() => ({ status: 402, body: { error: "the key has no units left", unitsLeft: 0 } }));
   await assert.rejects(ng(cfg, "postSwapOffer", {}), (e) => e.message === "the key has no units left" && e.status === 402);
   await assert.rejects(ngFunction(cfg, "getSwapOffer", { offerId: bare(OFFER) }), /the key has no units left/);
+});
+
+test("a job is asked for with waitMs, no session; a status that answers at once waits a little, then the job settles", async () => {
+  const answers = [{ status: "running" }, { status: "succeeded", txHash: "00ab" }];
+  const requests = server(() => ({ status: 200, body: answers.shift() }));
+  const job = await waitForJob(cfg, "job-1", { everyMs: 1 });
+  assert.deepEqual(job, { status: "succeeded", txHash: "00ab" });
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].url, "https://gw.example/api/v1/nightgate/getJobStatus");
+  assert.deepEqual(requests[0].body, { jobId: "job-1", waitMs: 25_000 });
 });

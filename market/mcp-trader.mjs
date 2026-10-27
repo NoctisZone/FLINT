@@ -4,8 +4,8 @@
  * state file. Everything a trader does on the market goes through the
  * server's tools, the ones any outside agent has: get_swap_wallet,
  * build_swap_offer, post_swap_offer, list_swap_offers, get_swap_offer,
- * take_swap_offer, sponsor_swap, retire_swap_offer, revert_swap_offer,
- * get_job_status.
+ * take_swap_offer, sponsor_swap, retire_swap_offer, revert_swap_offer.
+ * A write waits for its job and answers its outcome.
  *
  * `mcpTrader` maps the market's shapes onto the tools and runs on any
  * `call(tool, args)`; `openMcpTrader` starts the process and waits for the
@@ -55,6 +55,31 @@ const legOf = (side, what) => {
 const rowsOf = (answer) => (Array.isArray(answer) ? answer : answer?.value ?? []);
 
 /**
+ * A write until its job settles: the same call again while it answers
+ * `pending`, which picks up the job it started. A server error or 429 is not
+ * a verdict; "Retry after N s" waits that long. After `timeoutMs` the last
+ * answer stands, or the last error is thrown.
+ */
+export async function untilSettled(call, tool, args, { timeoutMs = 600_000, everyMs = 5_000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = Date.now } = {}) {
+  const t0 = now();
+  let last = null;
+  for (;;) {
+    let wait = everyMs;
+    try {
+      last = await call(tool, args);
+      if (last?.status !== "pending") return last;
+    } catch (err) {
+      const retryAfter = /Retry after (\d+)\s*s/i.exec(err.message ?? "");
+      const transient = retryAfter || err.status >= 500 || err.status === 429 || (!err.status && /timed? ?out|fetch failed|ECONN|socket|closed/i.test(err.message ?? ""));
+      if (!transient || now() - t0 > timeoutMs) throw err;
+      if (retryAfter) wait = (Number(retryAfter[1]) + 2) * 1000;
+    }
+    if (now() - t0 > timeoutMs) return last;
+    await sleep(wait);
+  }
+}
+
+/**
  * The market's view of one trader over the MCP tools.
  * @param {object} o
  * @param {(tool: string, args?: object) => Promise<any>} o.call   answers the tool's JSON, throws its error
@@ -65,23 +90,6 @@ export function mcpTrader({ name, call, close = async () => {}, pollMs = 5_000, 
     if (!w.synced) throw new Error(`${name}'s wallet is still syncing (${w.syncingSeconds ?? "?"} s)`);
     return w;
   };
-
-  /** Poll until the job leaves the queue; a failing poll is not a verdict. */
-  async function waitForJob(jobId, sessionId) {
-    const t0 = Date.now();
-    let job = null;
-    for (;;) {
-      try {
-        job = await call("get_job_status", { jobId, sessionId });
-        if (["succeeded", "failed"].includes(job.status)) return job;
-        if (job.status === "reconciliation_required" && job.txHash) return job;
-      } catch (err) {
-        if (err.status && err.status < 500 && err.status !== 429) throw err;
-      }
-      if (Date.now() - t0 > jobTimeoutMs) return job;
-      await new Promise((r) => setTimeout(r, pollMs));
-    }
-  }
 
   const revert = (half) => call("revert_swap_offer", { id: half.id });
 
@@ -124,11 +132,10 @@ export function mcpTrader({ name, call, close = async () => {}, pollMs = 5_000, 
 
     /** A taken offer to the sponsor: by the half's id, the maker half from the board when `offerId` names it. Waits for the job. */
     async submitSwap({ offerId, takerHalf }) {
-      const job = await call("sponsor_swap", {
+      const done = await untilSettled(call, "sponsor_swap", {
         halfId: takerHalf.id, ...(offerId ? { offerId } : {}), idempotencyKey: `otc-swap-${takerHalf.id}`,
-      });
-      const done = await waitForJob(job.jobId, job.sessionId);
-      return { jobId: job.jobId, status: done?.status ?? "unknown", txHash: done?.txHash ?? null, error: done?.errorMessage ?? done?.errorCode ?? null };
+      }, { timeoutMs: jobTimeoutMs, everyMs: pollMs });
+      return { jobId: done?.jobId ?? null, status: done?.status ?? "unknown", txHash: done?.txHash ?? null, error: done?.errorMessage ?? done?.errorCode ?? null };
     },
 
     /**
@@ -196,7 +203,8 @@ export async function openMcpTrader({ name, seedHex, key, cfg, index = 0, stateF
   }
 
   const call = async (tool, args = {}) => {
-    const res = await client.callTool({ name: tool, arguments: args }, undefined, { timeout: CALL_TIMEOUT_MS });
+    // a write sends progress every 5 s while it waits for its job: each one restarts the timeout
+    const res = await client.callTool({ name: tool, arguments: args }, undefined, { timeout: CALL_TIMEOUT_MS, resetTimeoutOnProgress: true, onprogress: () => {} });
     const text = res.content?.find((c) => c.type === "text")?.text ?? "";
     let body;
     try { body = JSON.parse(text); } catch { body = null; }

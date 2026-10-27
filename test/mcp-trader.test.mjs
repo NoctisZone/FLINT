@@ -20,7 +20,6 @@ test("several proof servers: each wallet takes the one its index points to; a se
 
 const C = "c".repeat(64);
 const D = "d".repeat(64);
-const POOL = "00000000-0000-0000-0000-706f6f6c0000";
 const OFFER = "11111111-2222-4333-8444-555555555555";
 
 /** Tools by name; each answers a value, a function of its arguments, or throws. */
@@ -72,18 +71,17 @@ test("an unbound half has no offer file: its base64 is the text", async () => {
   assert.equal((await t.makeOffer({ give: { type: C, value: 1n }, want: { type: D, value: 1n }, bind: false })).text, "b64");
 });
 
-test("taking names the board entry and the agreed terms; the sponsor then gets the half's id and the offer's", async () => {
-  const jobs = [{ status: "running" }, { status: "submitted" }, { status: "succeeded", txHash: "00ab" }];
+test("taking names the board entry and the agreed terms; the sponsor then gets the half's id and the offer's, the same call again while pending", async () => {
+  const answers = [{ status: "pending", jobId: "job-1", txHash: null }, { status: "succeeded", jobId: "job-1", txHash: "00ab", transactionHash: "ab00" }];
   const { t, calls } = trader({
     take_swap_offer: { id: "b".repeat(32), makerHalfB64: "maker", takerHalfB64: "taker", bound: true },
-    sponsor_swap: { jobId: "job-1", status: "pending", sessionId: POOL },
-    get_job_status: () => jobs.shift(),
+    sponsor_swap: () => answers.shift(),
   });
   const taken = await t.takeOffer({ text: "swapoffer1xyz", offerId: OFFER, expect: { gives: { [C]: 100n }, wants: { [D]: 30n } } });
   assert.deepEqual(calls[0], ["take_swap_offer", { offer: "swapoffer1xyz", offerId: OFFER, expect: { gives: { tokenType: C, amount: "100" }, wants: { tokenType: D, amount: "30" } } }]);
   const done = await t.submitSwap({ offerId: OFFER, takerHalf: taken.takerHalf, makerHalfB64: taken.makerHalfB64, takerHalfB64: taken.takerHalfB64 });
-  assert.deepEqual(calls[1], ["sponsor_swap", { halfId: "b".repeat(32), offerId: OFFER, idempotencyKey: `otc-swap-${"b".repeat(32)}` }]);
-  assert.deepEqual(calls.slice(2).map((c) => c[1]), Array(3).fill({ jobId: "job-1", sessionId: POOL }), "polled with the session the sponsor answered");
+  const sent = { halfId: "b".repeat(32), offerId: OFFER, idempotencyKey: `otc-swap-${"b".repeat(32)}` };
+  assert.deepEqual(calls.slice(1), [["sponsor_swap", sent], ["sponsor_swap", sent]], "pending: the same arguments pick up the same job");
   assert.deepEqual(done, { jobId: "job-1", status: "succeeded", txHash: "00ab", error: null });
 });
 
@@ -93,19 +91,20 @@ test("terms that name two token types are refused before any tool is called", as
   assert.deepEqual(calls, []);
 });
 
-test("a failed job comes back with its reason; a poll the server could not answer is asked again", async () => {
-  const answers = [() => { throw Object.assign(new Error("upstream down"), { status: 502 }); }, () => ({ status: "failed", errorCode: "CHAIN_EXECUTION_FAILED", errorMessage: "the offer was taken first" })];
-  const { t } = trader({ sponsor_swap: { jobId: "job-2", sessionId: POOL }, get_job_status: () => answers.shift()() });
+test("a failed job comes back with its reason; a write the server could not answer is sent again", async () => {
+  const answers = [() => { throw Object.assign(new Error("upstream down"), { status: 502 }); }, () => ({ status: "failed", jobId: "job-2", errorCode: "CHAIN_EXECUTION_FAILED", errorMessage: "the offer was taken first" })];
+  const { t } = trader({ sponsor_swap: () => answers.shift()() });
   assert.deepEqual(await t.submitSwap({ takerHalf: { id: "c".repeat(32) } }), { jobId: "job-2", status: "failed", txHash: null, error: "the offer was taken first" });
 });
 
-test("a poll the server refuses ends the wait", async () => {
-  const { t } = trader({ sponsor_swap: { jobId: "job-3", sessionId: POOL }, get_job_status: () => { throw Object.assign(new Error("key revoked"), { status: 401 }); } });
+test("a write the server refuses ends at once", async () => {
+  const { t, calls } = trader({ sponsor_swap: () => { throw Object.assign(new Error("key revoked"), { status: 401 }); } });
   await assert.rejects(t.submitSwap({ takerHalf: { id: "c".repeat(32) } }), /key revoked/);
+  assert.equal(calls.length, 1);
 });
 
 test("a swap without a board entry goes to the sponsor by the half's id alone", async () => {
-  const { t, calls } = trader({ sponsor_swap: { jobId: "job-4", sessionId: POOL }, get_job_status: { status: "succeeded", txHash: "00cd" } });
+  const { t, calls } = trader({ sponsor_swap: { status: "succeeded", jobId: "job-4", txHash: "00cd" } });
   await t.submitSwap({ takerHalf: { id: "d".repeat(32) } });
   assert.deepEqual(calls[0][1], { halfId: "d".repeat(32), idempotencyKey: `otc-swap-${"d".repeat(32)}` });
 });

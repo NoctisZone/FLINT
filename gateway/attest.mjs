@@ -16,6 +16,7 @@
  */
 import crypto from "node:crypto";
 import { canonical } from "./mandate.mjs";
+import { untilSettled } from "../market/mcp-trader.mjs";
 
 export const sha256 = (s) => crypto.createHash("sha256").update(typeof s === "string" ? s : canonical(s), "utf8").digest("hex");
 
@@ -63,20 +64,12 @@ const parsed = (x) => (typeof x === "string" ? JSON.parse(x) : x);
  * @param {(tool: string, args: object) => Promise<any>} o.call   the agent's MCP server (trader.call)
  * @param {string} o.contractAddress                               the AttestationVault
  * @param {string} [o.artifact]                                    vault lineage
- * @param {(jobId: string, sessionId?: string) => Promise<object>} o.waitForJob
+ * @param {number} [o.jobTimeoutMs]                               how long a sponsored call may stay pending
  */
-export function attester({ call, contractAddress, artifact = "attestation-vault-32", waitForJob, log = () => {}, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+export function attester({ call, contractAddress, artifact = "attestation-vault-32", jobTimeoutMs = 600_000, log = () => {}, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   let identity = null;
-  // the sponsor allows 60 transactions an hour and says how long to wait; a few waits are better than a lost proof
-  async function sponsor(args, tries = 4) {
-    for (let i = 1; ; i++) {
-      try { return await call("sponsor_unbound_transaction", args); } catch (err) {
-        const m = /Retry after (\d+)\s*s/i.exec(err.message ?? "");
-        if (!m || i >= tries) throw err;
-        await sleep((Number(m[1]) + 2) * 1000);
-      }
-    }
-  }
+  // the sponsor's hourly limit says how long to wait; a few waits are better than a lost proof
+  const sponsor = (args) => untilSettled(call, "sponsor_unbound_transaction", args, { timeoutMs: jobTimeoutMs, sleep, now });
   return {
     async identity() {
       if (!identity) identity = await call("get_attester_identity", {});
@@ -91,10 +84,9 @@ export function attester({ call, contractAddress, artifact = "attestation-vault-
       const t0 = now();
       const built = await call("build_sponsorable_transaction", { contractAddress, call: circuit, params, ...(merkleProof ? { merkleProof } : {}), compiledArtifactRef: artifact, bind: false });
       const provingMs = now() - t0;
-      const sub = await sponsor({ txId: built.txId, idempotencyKey: key });
-      const job = await waitForJob(sub.jobId, sub.sessionId);
+      const job = await sponsor({ txId: built.txId, idempotencyKey: key });
       const attesterId = built.attesterId ?? (await this.identity()).attesterId;
-      const result = { label, ...out, attesterId, txHash: job?.txHash ?? null, status: job?.status ?? "unknown", error: job?.errorMessage ?? job?.errorCode ?? null, jobId: sub.jobId, provingMs, at: new Date(now()).toISOString(), contractAddress, artifact };
+      const result = { label, ...out, attesterId, txHash: job?.txHash ?? null, status: job?.status ?? "unknown", error: job?.errorMessage ?? job?.errorCode ?? null, jobId: job?.jobId ?? null, provingMs, at: new Date(now()).toISOString(), contractAddress, artifact };
       log({ kind: result.status === "succeeded" ? "attested" : "attest.failed", ...result });
       return result;
     },

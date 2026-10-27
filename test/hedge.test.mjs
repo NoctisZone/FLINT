@@ -328,6 +328,11 @@ test("a hedge at Strike's minimum gets the steps that clear it with a margin; on
   const { h: low, orders: none } = setup({ minNotionalUsd: 100 });
   assert.deepEqual(await low.onFill(fill({ sizeBtc: 0.0012 })), { placed: false, small: true }, "96 USD needs 5.6 USD more: past dust, carried");
   assert.equal(none.length, 0);
+  // a market sell of 0.00127 finds no bids: the limit at the band edge (mark -2 %) is sized at its own price
+  const { h: thin, orders: tried } = setup({ minNotionalUsd: 100 });
+  const sold = await thin.onFill(fill({ side: "buy", sizeBtc: 0.00127 }));
+  await thin.onStrikeEvent({ kind: "order", clientOrderId: sold.clientOrderId, status: "CANCELED", terminal: true, closeReason: "market_order_exceeded_slippage", at: T0 + 100 });
+  assert.deepEqual([tried[1].type, tried[1].price, tried[1].size], ["limit", 78_400, 0.00129], "0.00127 at 78,400 is 99.57 USD: Strike rejected that live");
   // the books the live gateway came back with: frozen on a rejected hedge, 0.00125 short
   const { h: frozen, orders: placed } = setup({ minNotionalUsd: 100, state: { midnightInventoryBtc: 0.00187, strikePositionBtc: -0.00312, unhedgedBtc: -0.00125, frozen: true, frozenReason: "hedge rejected: order_less_than_min_notional" } });
   assert.ok((await frozen.rehedge()).placed, "crossing zero by two steps is dust: the frozen check lets the hedge through");

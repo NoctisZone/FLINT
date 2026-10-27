@@ -175,19 +175,20 @@ export function hedger({ mandate, symbol, strike, check = defaultCheck, log = ()
     const net = s.midnightInventoryBtc + s.strikePositionBtc + inflight;
     const most = Math.sign(need) === Math.sign(net) && Math.abs(net) < Math.abs(need) - stepBtc + 1e-12 ? Math.abs(net) : Math.abs(need);
     let sizeBtc = r8(Math.floor(most / stepBtc + 1e-9) * stepBtc);
-    // Strike judges the minimum at its own price: a hedge near it gets the few steps that clear it, worth less than dust
-    const clearBtc = r8(Math.ceil((minNotionalUsd * (1 + MIN_MARGIN)) / strike.mark() / stepBtc - 1e-9) * stepBtc);
-    if (sizeBtc < clearBtc && (clearBtc - sizeBtc) * strike.mark() <= dustUsd) sizeBtc = clearBtc;
-    if (sizeBtc * strike.mark() < minNotionalUsd) {
+    const side = need > 0 ? "sell" : "buy";
+    // a limit sits at the edge of the price band, rounded toward the mark so the band check passes
+    const mark = strike.mark();
+    const price = rest ? (side === "sell" ? onTick(mark * (1 - mandate.strike.priceBandPct / 100), +1) : onTick(mark * (1 + mandate.strike.priceBandPct / 100), -1)) : undefined;
+    // Strike judges the minimum at the order's own price: a hedge near it gets the few steps that clear it, worth less than dust
+    const px = price ?? mark;
+    const clearBtc = r8(Math.ceil((minNotionalUsd * (1 + MIN_MARGIN)) / px / stepBtc - 1e-9) * stepBtc);
+    if (sizeBtc < clearBtc && (clearBtc - sizeBtc) * mark <= dustUsd) sizeBtc = clearBtc;
+    if (sizeBtc * px < minNotionalUsd) {
       log({ kind: "carry.small", agent: mandate.agentId, unhedgedBtc: need, minNotionalUsd });
       // too small for Strike and nothing in flight: a freeze could not change that, so quoting goes on and the next fill nets or completes it
       if (s.frozen && !s.manual && pending.size === 0) { s.frozen = false; s.frozenReason = null; log({ kind: "resumed", agent: mandate.agentId, reason: "carried exposure under Strike's minimum order" }); changed(); }
       return { placed: false, small: true };
     }
-    const side = need > 0 ? "sell" : "buy";
-    // a limit sits at the edge of the price band, rounded toward the mark so the band check passes
-    const mark = strike.mark();
-    const price = rest ? (side === "sell" ? onTick(mark * (1 - mandate.strike.priceBandPct / 100), +1) : onTick(mark * (1 + mandate.strike.priceBandPct / 100), -1)) : undefined;
     const action = { venue: "strike", kind: "order", symbol, side, sizeBtc, price, hedge: true };
     // the check sees the position as if the orders in flight had filled: an opposite hedge still on its way would otherwise count as open
     const refused = check(action, { ...view(), strikePositionBtc: r8(s.strikePositionBtc - inflight) });

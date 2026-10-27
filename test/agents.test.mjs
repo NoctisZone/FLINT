@@ -98,7 +98,7 @@ test("the Strike position cap sizes the side whose hedge would push the position
   const v = view({ netDeltaBtc: 0, strikePositionBtc: -270 / 80_000 });
   const d = makerDecision(v, { minQuoteUsd: 100 });
   assert.deepEqual(d.quotes.map((q) => q.side), ["ask"]);
-  assert.match(d.reason, /Strike position cap leaves no room to hedge a bid/);
+  assert.match(d.reason, /Strike position cap or margin leaves no room to hedge a bid/);
   const e = makerDecision(view({ netDeltaBtc: 0, strikePositionBtc: -200 / 80_000 }));
   assert.equal(e.quotes.find((q) => q.side === "bid").sizeBtc, Math.floor(100 / 80_000 * 1e5) / 1e5, "100 USD of room");
 });
@@ -139,3 +139,16 @@ test("a size at the hedge minimum rounds up past it with a margin, so the quote 
   assert.equal(big.quotes[0].sizeBtc, 0.00182, "well above the minimum: rounded down as before");
 });
 
+
+test("a side whose hedge would need more Strike margin than is free is not quoted; a hedge that reduces the position needs none", () => {
+  const holdings = { btc: 0.007, usd: 470, spendable: { btc: 0.0028, usd: 188 } };
+  // 50 USD free at leverage 2: 80 USD of new position, under the 100 USD minimum
+  const flat = makerDecision(view({ holdings, strikeAvailableUsd: 50, leverage: 2 }), { minQuoteUsd: 100 });
+  assert.deepEqual(flat.quotes, [], "either hedge would open a position the margin cannot carry");
+  assert.match(flat.reason, /cap or margin leaves no room/);
+  // short 0.002 on Strike: an ask's hedge buys that back, a bid's hedge would sell more
+  const short = makerDecision(view({ holdings, strikeAvailableUsd: 50, leverage: 2, strikePositionBtc: -0.002, netDeltaBtc: 0, inventoryBtc: 0.002 }), { minQuoteUsd: 100 });
+  assert.deepEqual(short.quotes.map((q) => q.side), ["ask"]);
+  const unknown = makerDecision(view({ holdings, strikeAvailableUsd: null }), { minQuoteUsd: 100 });
+  assert.deepEqual(unknown.quotes.map((q) => q.side), ["ask", "bid"], "no margin reading: no margin limit");
+});

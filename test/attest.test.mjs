@@ -17,18 +17,19 @@ test("the window envelope hashes inputs and outputs and is stable for the same c
   assert.equal(m.payloadHash, "cd".repeat(32));
 });
 
-test("attest builds under the agent's id, hands the txId to the sponsor, waits for the job; verify asks live state", async () => {
+test("attest builds under the agent's id, hands the txId to the sponsor, takes the job's outcome from it; verify asks live state", async () => {
   const calls = [];
+  let outcome = { status: "succeeded", jobId: "job-1", txHash: "00ab".repeat(16) };
   const call = async (tool, args) => {
     calls.push([tool, args]);
     if (tool === "get_attester_identity") return { attesterId: "a1".repeat(32), network: "preprod" };
     if (tool === "build_sponsorable_transaction") return { txId: "tx-1", attesterId: "a1".repeat(32), bytes: 1234 };
-    if (tool === "sponsor_unbound_transaction") return { jobId: "job-1", sessionId: "s-1", status: "queued" };
+    if (tool === "sponsor_unbound_transaction") return outcome;
     if (tool === "verify_attestation") return { verified: true, recordKey: "rk".repeat(32), attesterId: args.attesterId, payloadHash: args.payloadHash };
     throw new Error(`unexpected ${tool}`);
   };
   const log = [];
-  const a = attester({ call, contractAddress: "e7".repeat(32), waitForJob: async (jobId) => ({ status: "succeeded", txHash: "00ab".repeat(16) }), log: (e) => log.push(e), now: () => 1000 });
+  const a = attester({ call, contractAddress: "e7".repeat(32), log: (e) => log.push(e), now: () => 1000 });
   const r = await a.attest({ payloadHash: "cd".repeat(32), metadataHash: "ef".repeat(32), label: "mandate" });
   assert.deepEqual([r.status, r.txHash, r.attesterId, r.label], ["succeeded", "00ab".repeat(16), "a1".repeat(32), "mandate"]);
   assert.deepEqual(calls[0], ["build_sponsorable_transaction", { contractAddress: "e7".repeat(32), call: "attest", params: { payloadHash: "cd".repeat(32), metadataHash: "ef".repeat(32) }, compiledArtifactRef: "attestation-vault-32", bind: false }]);
@@ -37,7 +38,8 @@ test("attest builds under the agent's id, hands the txId to the sponsor, waits f
   const v = await a.verify({ payloadHash: "cd".repeat(32) });
   assert.equal(v.verified, true);
   assert.equal(calls.at(-1)[1].attesterId, "a1".repeat(32), "the agent's own id when none is given");
-  const failed = attester({ call, contractAddress: "e7".repeat(32), waitForJob: async () => ({ status: "failed", errorCode: "CHAIN_EXECUTION_FAILED" }), log: (e) => log.push(e) });
+  outcome = { status: "failed", jobId: "job-2", errorCode: "CHAIN_EXECUTION_FAILED" };
+  const failed = attester({ call, contractAddress: "e7".repeat(32), log: (e) => log.push(e) });
   const f = await failed.attest({ payloadHash: "cd".repeat(32), metadataHash: "ef".repeat(32), label: "window" });
   assert.deepEqual([f.status, f.error, log.at(-1).kind], ["failed", "CHAIN_EXECUTION_FAILED", "attest.failed"]);
 });
@@ -56,12 +58,12 @@ test("badges: the claims document is prepared, attested and rooted; a true claim
     if (tool === "get_attester_identity") return { attesterId: "a1".repeat(32) };
     if (tool === "prepare_document_proof") return { payloadHash: "dd".repeat(32), contentRoot: "cc".repeat(32), schemaId: "ee".repeat(32), canonicalDocument: "{}", fields: JSON.stringify(fields), schema: "[]", opening: JSON.stringify({ saltSeed: key(3), slots: [] }) };
     if (tool === "build_sponsorable_transaction") return { txId: `tx-${calls.length}`, attesterId: "a1".repeat(32) };
-    if (tool === "sponsor_unbound_transaction") return { jobId: `job-${calls.length}`, sessionId: "s", status: "queued" };
+    if (tool === "sponsor_unbound_transaction") return { jobId: `job-${calls.length}`, status: "succeeded", txHash: "00ab".repeat(16) };
     if (tool === "verify_predicate") return { verified: true };
     throw new Error(`unexpected ${tool}`);
   };
   const log = [];
-  const a = attester({ call, contractAddress: "e7".repeat(32), waitForJob: async () => ({ status: "succeeded", txHash: "00ab".repeat(16) }), log: (e) => log.push(e), now: () => 1000 });
+  const a = attester({ call, contractAddress: "e7".repeat(32), log: (e) => log.push(e), now: () => 1000 });
   const b = await a.badges({ agentId: "mm-rule", mandate: M, mandateHash: "ab".repeat(32), runStart: "2026-10-22T06:00:00Z", asOf: "2026-10-22T07:00:00Z", claims, counts: { midnightFills: 3 } });
   assert.deepEqual([b.payloadHash, b.contentRoot, b.anchor.status, b.root.status], ["dd".repeat(32), "cc".repeat(32), "succeeded", "succeeded"]);
   assert.deepEqual(b.claims.map((c) => [c.badge, c.status, c.earned, c.verified]), [["no-violations", "false", false, false], ["delta-held", "succeeded", true, true], ["hedged-in-time", "succeeded", true, true], ["allowed-venues", "succeeded", true, true]]);
@@ -77,19 +79,19 @@ test("badges: the claims document is prepared, attested and rooted; a true claim
   assert.ok(b.witness.opening.saltSeed, "the opening stays with the file, never on the feed");
 });
 
-test("a rate-limited sponsor is retried after the time it names; a different error is not", async () => {
+test("a rate-limited sponsor is retried after the time it names, a pending job is asked for again; a different error is not", async () => {
   let n = 0;
   const waits = [];
   const call = async (tool) => {
     if (tool === "get_attester_identity") return { attesterId: "a1".repeat(32) };
     if (tool === "build_sponsorable_transaction") return { txId: "tx", attesterId: "a1".repeat(32) };
-    if (tool === "sponsor_unbound_transaction") { n += 1; if (n < 3) throw new Error("Rate limited (sponsor: 60 per hour). Retry after 15s"); return { jobId: "j", sessionId: "s" }; }
+    if (tool === "sponsor_unbound_transaction") { n += 1; if (n < 3) throw new Error("Rate limited (sponsor: 60 per hour). Retry after 15s"); return n === 3 ? { status: "pending", jobId: "j" } : { status: "succeeded", jobId: "j", txHash: "00".repeat(32) }; }
     throw new Error(`unexpected ${tool}`);
   };
-  const a = attester({ call, contractAddress: "e7".repeat(32), waitForJob: async () => ({ status: "succeeded", txHash: "00".repeat(32) }), sleep: async (ms) => { waits.push(ms); }, now: () => 0 });
+  const a = attester({ call, contractAddress: "e7".repeat(32), sleep: async (ms) => { waits.push(ms); }, now: () => 0 });
   const r = await a.attest({ payloadHash: "cd".repeat(32), metadataHash: "ef".repeat(32), label: "window" });
-  assert.deepEqual([r.status, n, waits], ["succeeded", 3, [17_000, 17_000]]);
-  const other = attester({ call: async (tool) => { if (tool === "build_sponsorable_transaction") return { txId: "tx" }; throw new Error("no dust backing free"); }, contractAddress: "e7".repeat(32), waitForJob: async () => ({}), sleep: async () => {} });
+  assert.deepEqual([r.status, n, waits], ["succeeded", 4, [17_000, 17_000, 5_000]], "two waits the sponsor named, one short one after pending");
+  const other = attester({ call: async (tool) => { if (tool === "build_sponsorable_transaction") return { txId: "tx" }; throw new Error("no dust backing free"); }, contractAddress: "e7".repeat(32), sleep: async () => {} });
   await assert.rejects(() => other.attest({ payloadHash: "cd".repeat(32), metadataHash: "ef".repeat(32), label: "window" }), /no dust backing/);
 });
 
