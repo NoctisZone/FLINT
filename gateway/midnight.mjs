@@ -16,6 +16,8 @@ import { serverBoard } from "./desk.mjs";
 export const SATS = 100_000_000;
 export const CENTS = 100;
 export const TAG = "flint";
+// a changes read reaches this far behind the last one, so clock skew and a slow round lose no row
+const POLL_OVERLAP_MS = 120_000;
 
 const cents = (usd) => BigInt(Math.round(usd * CENTS));
 const usd = (c) => Number(c) / CENTS;
@@ -35,6 +37,7 @@ export function midnightVenue({ trader, agentId, types, board = serverBoard(trad
   pair ??= Object.keys(bases)[0];
   if (!bases[pair]) throw new Error(`${agentId}: no token types for the pair ${pair}`);
   const open = new Map(); // quoteId → quote
+  let lastPoll = null;
   // the server's board records the fill against the offer itself; the gateway's board is told here
   const onServer = board.kind === "server";
   const baseOf = (p) => { const b = bases[p]; if (!b) throw new Error(`no token types for the pair ${p}`); return b; };
@@ -128,12 +131,29 @@ export function midnightVenue({ trader, agentId, types, board = serverBoard(trad
      */
     async pollFills() {
       const fills = [];
+      if (!open.size) return fills;
+      // the server board names what changed among the caller's offers in one read
+      let byId = null;
+      if (board.myOffers) {
+        const asked = now();
+        try {
+          const rows = await board.myOffers({ ...(lastPoll ? { since: new Date(lastPoll - POLL_OVERLAP_MS).toISOString() } : {}), limit: 200 });
+          byId = new Map(rows.map((r) => [r.offerId ?? r.value?.offerId, r]));
+          lastPoll = asked;
+        } catch (err) { log({ kind: "poll.error", agent: agentId, error: err.message }); return fills; }
+      }
       for (const q of [...open.values()]) {
-        let row;
-        try { row = await board.getOffer(q.quoteId); } catch (err) { log({ kind: "poll.error", agent: agentId, quoteId: q.quoteId, error: err.message }); continue; }
+        let row = byId?.get(q.quoteId);
+        // one the read did not name is asked for alone, once it is past its expiry
+        const overdue = q.expiresAt && now() - Date.parse(q.expiresAt) > POLL_OVERLAP_MS;
+        if (!row && (!byId || overdue)) {
+          try { row = await board.getOffer(q.quoteId); } catch (err) { log({ kind: "poll.error", agent: agentId, quoteId: q.quoteId, error: err.message }); continue; }
+        }
         const status = row?.status ?? row?.value?.status;
         if (!status || status === "open") continue;
         open.delete(q.quoteId);
+        // a filled or lapsed quote moved coins: the next wallet read asks the server
+        trader.refresh?.();
         if (status === "filled") {
           const txHash = row.filledTxHash ?? row.value?.filledTxHash ?? null;
           fills.push({ id: q.quoteId, pair: q.pair ?? pair, side: q.side === "ask" ? "sell" : "buy", sizeBtc: q.sizeBtc, price: q.price, txHash, at: now() });
@@ -148,6 +168,8 @@ export function midnightVenue({ trader, agentId, types, board = serverBoard(trad
     /** Open quotes on the board, both sides, newest first: the agent's pair, or every pair the venue serves with `all`. */
     async board({ all = false } = {}) {
       const ps = all ? Object.keys(bases) : [pair];
+      // the server board answers every pair in one read by the market's tag; rowToQuote drops what is not ours
+      if (onServer) return (await board.listOffers({ tag, limit: 200 })).map(rowToQuote).filter((q) => q && ps.includes(q.pair));
       const rows = [];
       for (const p of ps) rows.push(...await board.listOffers({ givesType: baseOf(p).type, wantsType: quoteType }), ...await board.listOffers({ givesType: quoteType, wantsType: baseOf(p).type }));
       return rows.map(rowToQuote).filter(Boolean);

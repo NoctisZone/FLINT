@@ -14,6 +14,7 @@ export function serverBoard(trader) {
     kind: "server",
     post: ({ offer, tags, expiresAt }) => trader.post({ offer, tags, expiresAt }),
     listOffers: (filter) => trader.listOffers(filter),
+    myOffers: (filter) => trader.myOffers(filter),
     getOffer: (offerId) => trader.getOffer(offerId),
     retire: (offerId) => trader.retire(offerId),
   };

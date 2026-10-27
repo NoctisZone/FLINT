@@ -165,3 +165,25 @@ test("the board: post, list, get and retire are the server's tools", async () =>
   assert.deepEqual(calls[0][1], { offer: "swapoffer1xyz", tags: ["otc-demo", "trader-0"], expiresAt: "2026-01-01T00:05:00.000Z" });
   assert.deepEqual(calls[4][1], { offerId: OFFER });
 });
+
+test("the wallet is read once and reused until the trader acts, refresh() is called or a minute passes", async () => {
+  let t = 0;
+  const { t: tr, calls } = trader({
+    get_swap_wallet: wallet([{ tokenType: C, balance: "1000", coins: 3, spendable: "640" }]),
+    post_swap_offer: { offerId: "o1" },
+    retire_swap_offer: () => { throw Object.assign(new Error("gone"), { status: 404 }); },
+  }, { now: () => t });
+  const reads = () => calls.filter(([c]) => c === "get_swap_wallet").length;
+  await tr.holdings(); await tr.spendable(C); await tr.balances();
+  assert.equal(reads(), 1, "three reads in one turn, one call");
+  await tr.post({ offer: "x", tags: [], expiresAt: "2026-10-27T12:00:00Z" });
+  await tr.holdings();
+  assert.equal(reads(), 2, "posting changes the wallet");
+  await assert.rejects(tr.retire("o1"), /gone/);
+  await tr.holdings();
+  assert.equal(reads(), 3, "an action that failed may still have changed it");
+  tr.refresh(); await tr.holdings();
+  assert.equal(reads(), 4);
+  t += 61_000; await tr.holdings();
+  assert.equal(reads(), 5, "never older than a minute");
+});

@@ -364,6 +364,8 @@ export function gateway({ agents, mark, feed, log, now = Date.now, rnd = Math.ra
     for (const q of feed.get("quotes").quotes) if (q.expiresAt && Date.parse(q.expiresAt) <= now()) feed.quoteGone(q.quoteId);
     for (const a of agents) {
       const b = books.get(a.agentId);
+      // one fresh wallet read per agent and round; its own actions clear it again
+      a.trader?.refresh?.();
       try {
         await fillsRound(a, b);
         if (a.mind === "maker") await makerRound(a, b);

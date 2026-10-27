@@ -84,16 +84,23 @@ export async function untilSettled(call, tool, args, { timeoutMs = 600_000, ever
  * @param {object} o
  * @param {(tool: string, args?: object) => Promise<any>} o.call   answers the tool's JSON, throws its error
  */
-export function mcpTrader({ name, call, close = async () => {}, pollMs = 5_000, jobTimeoutMs = 600_000 }) {
+export function mcpTrader({ name, call, close = async () => {}, pollMs = 5_000, jobTimeoutMs = 600_000, walletTtlMs = 60_000, now = Date.now }) {
+  // each wallet read costs board reads on the server: it is reused until the trader acts, `refresh()` or the TTL
+  let cached = null;
+  const refresh = () => { cached = null; };
   const wallet = async () => {
+    if (cached && now() - cached.at < walletTtlMs) return cached.w;
     const w = await call("get_swap_wallet");
     if (!w.synced) throw new Error(`${name}'s wallet is still syncing (${w.syncingSeconds ?? "?"} s)`);
+    cached = { w, at: now() };
     return w;
   };
+  /** An action that changes the wallet: the next read is fresh, whether it worked or not. */
+  const acting = (fn) => async (...args) => { try { return await fn(...args); } finally { refresh(); } };
 
-  const revert = (half) => call("revert_swap_offer", { id: half.id });
+  const revert = acting((half) => call("revert_swap_offer", { id: half.id }));
 
-  return {
+  const trader = {
     name,
 
     /** Shielded balance per raw token type, in atoms. */
@@ -170,13 +177,20 @@ export function mcpTrader({ name, call, close = async () => {}, pollMs = 5_000, 
 
     post: ({ offer, tags, expiresAt }) => call("post_swap_offer", { offer, tags, expiresAt }),
     listOffers: async (filter = {}) => rowsOf(await call("list_swap_offers", filter)),
+    /** The caller's own offers, open and closed, by last change; `since` keeps the ones changed after it. */
+    myOffers: async (filter = {}) => rowsOf(await call("my_swap_offers", filter)),
     getOffer: (offerId) => call("get_swap_offer", { offerId }),
     retire: (offerId) => call("retire_swap_offer", { offerId }),
+
+    /** The next wallet read asks the server again: the gateway calls it at each agent's turn. */
+    refresh,
 
     /** Any other tool of the server, by name: attestations, proofs, identity. */
     call,
     close,
   };
+  for (const k of ["makeOffer", "takeOffer", "submitSwap", "consolidate", "post", "retire"]) trader[k] = acting(trader[k]);
+  return trader;
 }
 
 /**
